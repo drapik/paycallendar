@@ -16,6 +16,13 @@ create table if not exists public.suppliers (
   created_at timestamptz not null default now()
 );
 
+-- Контрагенты (поступления)
+create table if not exists public.counterparties (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  created_at timestamptz not null default now()
+);
+
 -- Заказы поставщиков
 create table if not exists public.supplier_orders (
   id uuid primary key default gen_random_uuid(),
@@ -32,6 +39,7 @@ create table if not exists public.supplier_orders (
 -- Ожидаемые поступления от контрагентов
 create table if not exists public.incoming_payments (
   id uuid primary key default gen_random_uuid(),
+  counterparty_id uuid references public.counterparties(id) on delete set null,
   counterparty text not null,
   amount numeric not null,
   expected_date date not null,
@@ -41,5 +49,6 @@ create table if not exists public.incoming_payments (
 );
 
 create index if not exists idx_incoming_payments_date on public.incoming_payments(expected_date);
+create index if not exists idx_incoming_payments_counterparty on public.incoming_payments(counterparty_id);
 create index if not exists idx_supplier_orders_due_date on public.supplier_orders(due_date);
 create index if not exists idx_supplier_orders_supplier on public.supplier_orders(supplier_id);

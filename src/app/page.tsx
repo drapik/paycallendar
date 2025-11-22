@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import {
   Account,
+  Counterparty,
   CashEvent,
   CashPlanResult,
   IncomingPayment,
@@ -29,7 +30,8 @@ interface AccountFormState {
 }
 
 interface InflowFormState {
-  counterparty: string;
+  counterpartyId: string;
+  newCounterparty: string;
   amount: string;
   expectedDate: string;
   kind: 'fixed' | 'planned';
@@ -48,10 +50,11 @@ type OrderWithSupplier = SupplierOrder & {
   total_amount: number | string;
   deposit_amount: number | string;
 };
-type InflowRow = IncomingPayment & { amount: number | string };
+type InflowRow = IncomingPayment & { amount: number | string; counterparties?: { name?: string | null } | null };
 interface DataResponse {
   accounts: AccountRow[];
   suppliers: Supplier[];
+  counterparties: Counterparty[];
   orders: OrderWithSupplier[];
   inflows: InflowRow[];
   error?: string;
@@ -109,6 +112,7 @@ function Badge({ type }: { type: CashEvent['type'] }) {
 export default function Home() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
   const [orders, setOrders] = useState<OrderWithSupplier[]>([]);
   const [inflows, setInflows] = useState<IncomingPayment[]>([]);
   const [loading, setLoading] = useState(false);
@@ -124,7 +128,8 @@ export default function Home() {
 
   const [accountForm, setAccountForm] = useState<AccountFormState>({ name: '', balance: '' });
   const [inflowForm, setInflowForm] = useState<InflowFormState>({
-    counterparty: '',
+    counterpartyId: '',
+    newCounterparty: '',
     amount: '',
     expectedDate: today,
     kind: 'fixed',
@@ -181,11 +186,13 @@ export default function Home() {
 
       const normalizedInflows: IncomingPayment[] = (payload.inflows ?? []).map((item) => ({
         ...item,
+        counterparty: item.counterparty || item.counterparties?.name || 'Без контрагента',
         amount: Number(item.amount ?? 0),
       }));
 
       setAccounts(normalizedAccounts);
       setSuppliers(payload.suppliers || []);
+      setCounterparties(payload.counterparties || []);
       setOrders(normalizedOrders);
       setInflows(normalizedInflows);
     } catch (err) {
@@ -282,14 +289,39 @@ export default function Home() {
     }
   };
 
+  const resolveCounterparty = async (): Promise<{ id: string | null; name: string } | null> => {
+    if (inflowForm.counterpartyId) {
+      const selected = counterparties.find((item) => item.id === inflowForm.counterpartyId);
+      return selected ? { id: selected.id, name: selected.name } : null;
+    }
+
+    if (!inflowForm.newCounterparty) return null;
+
+    const response = await fetch('/api/counterparties', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: inflowForm.newCounterparty }),
+    });
+
+    const payload = await parseJsonSafe(response);
+    if (!response.ok) throw new Error(payload.error || 'Не удалось создать контрагента');
+    await loadData();
+
+    return { id: payload.data?.id ?? null, name: payload.data?.name ?? inflowForm.newCounterparty };
+  };
+
   const handleInflowSubmit = async () => {
     resetMessages();
     try {
+      const counterparty = await resolveCounterparty();
+      if (!counterparty) throw new Error('Укажите контрагента');
+
       const response = await fetch('/api/inflows', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          counterparty: inflowForm.counterparty,
+          counterparty_id: counterparty.id,
+          counterparty_name: counterparty.name,
           amount: Number(inflowForm.amount),
           expected_date: inflowForm.expectedDate,
           kind: inflowForm.kind,
@@ -298,7 +330,14 @@ export default function Home() {
       });
       const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось добавить поступление');
-      setInflowForm({ counterparty: '', amount: '', expectedDate: today, kind: 'fixed', notes: '' });
+      setInflowForm({
+        counterpartyId: '',
+        newCounterparty: '',
+        amount: '',
+        expectedDate: today,
+        kind: 'fixed',
+        notes: '',
+      });
       setMessage('Поступление добавлено');
       loadData();
     } catch (err) {
@@ -676,12 +715,28 @@ export default function Home() {
               <div className="rounded-lg border border-dashed p-3">
                 <p className="mb-2 text-sm font-semibold">Добавить поступление</p>
                 <div className="grid grid-cols-2 gap-3">
+                  <select
+                    value={inflowForm.counterpartyId}
+                    onChange={(e) =>
+                      setInflowForm((prev) => ({ ...prev, counterpartyId: e.target.value, newCounterparty: '' }))
+                    }
+                    className="col-span-2 rounded-lg border px-3 py-2"
+                  >
+                    <option value="">Выбрать контрагента</option>
+                    {counterparties.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                  </select>
                   <input
                     type="text"
-                    placeholder="Контрагент"
-                    value={inflowForm.counterparty}
-                    onChange={(e) => setInflowForm((prev) => ({ ...prev, counterparty: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
+                    placeholder="Или введите нового контрагента"
+                    value={inflowForm.newCounterparty}
+                    onChange={(e) =>
+                      setInflowForm((prev) => ({ ...prev, newCounterparty: e.target.value, counterpartyId: '' }))
+                    }
+                    className="col-span-2 rounded-lg border px-3 py-2"
                   />
                   <input
                     type="number"
@@ -699,7 +754,7 @@ export default function Home() {
                   <select
                     value={inflowForm.kind}
                     onChange={(e) => setInflowForm((prev) => ({ ...prev, kind: e.target.value as 'fixed' | 'planned' }))}
-                    className="rounded-lg border px-3 py-2"
+                    className="col-span-2 rounded-lg border px-3 py-2"
                   >
                     <option value="fixed">Фиксированный</option>
                     <option value="planned">Плановый</option>
