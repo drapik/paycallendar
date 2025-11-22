@@ -9,6 +9,7 @@ import {
   CashPlanResult,
   Counterparty,
   Currency,
+  DailyStat,
   IncomingPayment,
   Supplier,
   SupplierOrder,
@@ -658,8 +659,10 @@ export default function Home() {
     return { min: Math.min(...balances), max: Math.max(...balances) };
   }, [chartData]);
 
+  const cashGapDays = useMemo(() => plan?.daily.filter((day) => day.balance < 0) ?? [], [plan?.daily]);
+
   const chartPoints = useMemo(() => {
-    if (!chartData.length) return '';
+    if (!chartData.length) return { polyline: '', points: [] as { x: number; y: number; day: DailyStat }[] };
     const width = 800;
     const height = 240;
     const padding = 30;
@@ -672,13 +675,13 @@ export default function Home() {
       return height - padding - ratio * (height - padding * 2);
     };
 
-    return chartData
-      .map((day, idx) => {
-        const x = padding + idx * xStep;
-        const y = scaleY(day.balance);
-        return `${x},${y}`;
-      })
-      .join(' ');
+    const points = chartData.map((day, idx) => {
+      const x = padding + idx * xStep;
+      const y = scaleY(day.balance);
+      return { x, y, day };
+    });
+
+    return { polyline: points.map((point) => `${point.x},${point.y}`).join(' '), points };
   }, [chartBounds.max, chartBounds.min, chartData]);
 
   return (
@@ -695,9 +698,7 @@ export default function Home() {
             <p className={`text-3xl font-semibold ${totalBalance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
               {totalBalance.toLocaleString('ru-RU', { minimumFractionDigits: 0 })} ₽
             </p>
-            {plan && plan.cashGap > 0 && (
-              <p className="mt-1 text-xs text-rose-600">Внимание: кассовый разрыв {plan.cashGap.toLocaleString('ru-RU')} ₽</p>
-            )}
+            {cashGapDays.length > 0 && <p className="mt-1 text-xs text-rose-600">Обнаружен кассовый разрыв</p>}
           </div>
         </header>
 
@@ -1339,10 +1340,18 @@ export default function Home() {
 
             <div className="rounded-lg border p-4">
               <p className="text-sm font-semibold">Статус кассовых разрывов</p>
-              {plan && plan.cashGap > 0 ? (
-                <p className="mt-2 text-sm text-rose-600">
-                  План уходит в минус на {plan.cashGap.toLocaleString('ru-RU')} ₽. Усильте поступления или сдвиньте платежи.
-                </p>
+              {cashGapDays.length > 0 ? (
+                <div className="mt-2 space-y-2 text-sm text-rose-700">
+                  <p>План уходит в минус. Усильте поступления или сдвиньте платежи.</p>
+                  <ul className="divide-y divide-rose-100 overflow-hidden rounded-lg border border-rose-100 bg-rose-50/50">
+                    {cashGapDays.map((day) => (
+                      <li key={day.date} className="flex items-center justify-between px-3 py-2">
+                        <span className="font-medium">{formatDate(day.date)}</span>
+                        <span className="font-semibold">{Math.abs(day.balance).toLocaleString('ru-RU')} ₽</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : (
                 <p className="mt-2 text-sm text-emerald-600">Разрывов не найдено</p>
               )}
@@ -1403,21 +1412,31 @@ export default function Home() {
                     strokeWidth="1"
                     strokeDasharray="4 4"
                   />
-                  {chartPoints && (
+                  {chartPoints.points.length > 0 && (
                     <>
                       <polyline
-                        points={`30,210 ${chartPoints} 770,210`}
+                        points={`30,210 ${chartPoints.polyline} 770,210`}
                         fill="url(#balanceGradient)"
                         stroke="none"
                       />
                       <polyline
-                        points={chartPoints}
+                        points={chartPoints.polyline}
                         fill="none"
                         stroke="#10b981"
                         strokeWidth="3"
                         strokeLinejoin="round"
                         strokeLinecap="round"
                       />
+                      {chartPoints.points
+                        .filter((point) => point.day.balance < 0)
+                        .map((point) => (
+                          <g key={point.day.date}>
+                            <circle cx={point.x} cy={point.y} r="6" fill="#fecdd3" stroke="#fb7185" strokeWidth="2" />
+                            <title>
+                              {`${formatDate(point.day.date)}: минус ${Math.abs(point.day.balance).toLocaleString('ru-RU')} ₽`}
+                            </title>
+                          </g>
+                        ))}
                     </>
                   )}
                 </svg>
