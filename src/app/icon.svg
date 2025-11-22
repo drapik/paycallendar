@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="LITEC Calculator icon">
+  <defs>
+    <linearGradient id="bg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#101828" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="16" fill="url(#bg)" />
+  <rect x="22" y="22" width="84" height="84" rx="12" fill="#0f172a" stroke="#7dd3fc" stroke-width="2" />
+  <rect x="30" y="36" width="68" height="12" rx="6" fill="#e0f2fe" opacity="0.9" />
+  <g fill="#7dd3fc">
+    <rect x="34" y="58" width="20" height="20" rx="4" />
+    <rect x="54" y="58" width="20" height="20" rx="4" opacity="0.9" />
+    <rect x="74" y="58" width="20" height="20" rx="4" opacity="0.8" />
+    <rect x="34" y="78" width="20" height="20" rx="4" opacity="0.8" />
+    <rect x="54" y="78" width="20" height="20" rx="4" opacity="0.7" />
+    <rect x="74" y="78" width="20" height="20" rx="4" opacity="0.6" />
+  </g>
+  <text x="64" y="48" text-anchor="middle" font-family="'Inter', 'Segoe UI', system-ui" font-size="12" font-weight="700" fill="#0ea5e9" letter-spacing="0.6">
+    LITEC
+  </text>
+</svg>

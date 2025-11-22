@@ -30,6 +30,7 @@
 *.gif
 *.ico
 *.svg
+!/src/app/icon.svg
 
 # debug
 npm-debug.log*
