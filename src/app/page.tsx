@@ -136,6 +136,7 @@ export default function Home() {
   const [inflows, setInflows] = useState<InflowRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [importingOrders, setImportingOrders] = useState(false);
+  const [checkingOrders, setCheckingOrders] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<CashPlanResult | null>(null);
@@ -309,6 +310,25 @@ export default function Home() {
       setError(extractErrorMessage(err));
     } finally {
       setImportingOrders(false);
+    }
+  };
+
+  const handleMoyskladCount = async () => {
+    resetMessages();
+    setCheckingOrders(true);
+
+    try {
+      const response = await fetch('/api/moysklad/import');
+      const payload = await parseJsonSafe(response);
+
+      if (!response.ok) throw new Error(payload.error || 'Не удалось получить количество заказов');
+
+      const total = Number(payload.count ?? payload.total ?? payload.imported ?? 0);
+      setMessage(`Сейчас по фильтрам в МойСклад ${total} заказов`);
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setCheckingOrders(false);
     }
   };
 
@@ -622,6 +642,36 @@ export default function Home() {
             {error || message}
           </div>
         )}
+
+        <div className="mt-6 rounded-2xl border border-emerald-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <p className="text-xs uppercase tracking-wide text-emerald-700">Выгрузка из МойСклад</p>
+              <h2 className="text-lg font-semibold text-slate-900">Подтяните заказы поставщикам</h2>
+              <p className="text-sm text-slate-600">
+                Кнопки ниже сразу вызывают импорт или позволяют посмотреть текущее количество заказов по фильтрам
+                (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2 sm:justify-end">
+              <button
+                onClick={handleMoyskladCount}
+                disabled={checkingOrders || importingOrders}
+                className="rounded-lg border border-emerald-200 px-4 py-2 text-sm font-semibold text-emerald-700 hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {checkingOrders ? 'Проверяем…' : 'Проверить количество'}
+              </button>
+              <button
+                onClick={handleMoyskladImport}
+                disabled={importingOrders}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {importingOrders ? 'Выгружаем заказы…' : 'Выгрузить заказы'}
+              </button>
+            </div>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">Источник: https://api.moysklad.ru/api/remap/1.2/entity/purchaseorder</p>
+        </div>
 
         <section className="mt-8 grid gap-4 lg:grid-cols-3">
           <div className="rounded-2xl bg-white p-5 shadow-sm lg:col-span-2">

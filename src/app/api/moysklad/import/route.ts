@@ -199,3 +199,22 @@ export async function POST() {
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
+
+export async function GET() {
+  const token = process.env.MOYSKLAD_TOKEN;
+
+  if (!token) {
+    return NextResponse.json(
+      { error: 'Задайте переменную окружения MOYSKLAD_TOKEN для доступа к API МойСклад' },
+      { status: 500 },
+    );
+  }
+
+  try {
+    const externalOrders = await fetchPurchaseOrders(token);
+    return NextResponse.json({ count: externalOrders.length });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Не удалось получить количество заказов';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
