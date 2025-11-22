@@ -29,15 +29,7 @@ function collectEvents(
   rates: Record<Currency, number>,
 ): CashEvent[] {
   const events: CashEvent[] = [];
-  const openingBalance = accounts.reduce((sum, account) => sum + normalizeAmount(account.balance), 0);
   const todayKey = toDateKey(new Date());
-
-  events.push({
-    amount: openingBalance,
-    date: toDateKey(new Date()),
-    description: 'Стартовый баланс',
-    type: 'opening',
-  });
 
   inflows.forEach((inflow) => {
     const expectedDate = toDateKey(inflow.expected_date);
@@ -81,7 +73,7 @@ function collectEvents(
     }
   });
 
-  return events;
+  return events.filter((event) => event.date >= todayKey);
 }
 
 export function buildCashPlan(
@@ -99,7 +91,13 @@ export function buildCashPlan(
   const openingBalance = accounts.reduce((sum, account) => sum + normalizeAmount(account.balance), 0);
 
   if (events.length === 0) {
-    return { openingBalance: 0, daily: [], minBalance: 0, cashGap: 0 };
+    const normalizedOpening = Number(openingBalance.toFixed(2));
+    return {
+      openingBalance: normalizedOpening,
+      daily: [],
+      minBalance: normalizedOpening,
+      cashGap: normalizedOpening < 0 ? Number((-normalizedOpening).toFixed(2)) : 0,
+    };
   }
 
   const firstDate = parseISO(events[0].date);
