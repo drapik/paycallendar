@@ -135,6 +135,7 @@ export default function Home() {
   const [orders, setOrders] = useState<OrderWithSupplier[]>([]);
   const [inflows, setInflows] = useState<InflowRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [importingOrders, setImportingOrders] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [plan, setPlan] = useState<CashPlanResult | null>(null);
@@ -285,6 +286,29 @@ export default function Home() {
       setMessage('Настройки сохранены');
     } catch (err) {
       setError(extractErrorMessage(err));
+    }
+  };
+
+  const handleMoyskladImport = async () => {
+    resetMessages();
+    setImportingOrders(true);
+
+    try {
+      const response = await fetch('/api/moysklad/import', { method: 'POST' });
+      const payload = await parseJsonSafe(response);
+
+      if (!response.ok) throw new Error(payload.error || 'Не удалось выгрузить заказы');
+
+      const imported = Number(payload.saved ?? payload.imported ?? 0);
+      const total = Number(payload.imported ?? imported);
+      const label = imported || total ? `${imported || total}` : '0';
+
+      setMessage(`Выгружено и сохранено ${label} заказов из МойСклад`);
+      await loadData();
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setImportingOrders(false);
     }
   };
 
@@ -640,6 +664,16 @@ export default function Home() {
               <p>Текущий курс: {settings.cnyRate.toLocaleString('ru-RU')} ₽ за 1 ¥</p>
               <p>Базовая валюта: российские рубли</p>
             </div>
+            <button
+              onClick={handleMoyskladImport}
+              disabled={importingOrders}
+              className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {importingOrders ? 'Выгружаем заказы…' : 'Выгрузить заказы из МойСклад'}
+            </button>
+            <p className="mt-2 text-xs text-slate-500">
+              Будут подтянуты заказы поставщикам из МойСклад по указанным фильтрам (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
+            </p>
           </div>
         </section>
 
