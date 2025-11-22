@@ -133,7 +133,7 @@ export default function Home() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
   const [orders, setOrders] = useState<OrderWithSupplier[]>([]);
-  const [inflows, setInflows] = useState<IncomingPayment[]>([]);
+  const [inflows, setInflows] = useState<InflowRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -211,7 +211,7 @@ export default function Home() {
         currency: (item.currency as Currency) || 'RUB',
       }));
 
-      const normalizedInflows: IncomingPayment[] = (payload.inflows ?? []).map((item) => ({
+      const normalizedInflows: InflowRow[] = (payload.inflows ?? []).map((item) => ({
         ...item,
         counterparty: item.counterparty || item.counterparties?.name || 'Без контрагента',
         amount: Number(item.amount ?? 0),
