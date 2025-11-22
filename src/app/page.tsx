@@ -169,6 +169,7 @@ export default function Home() {
     description: '',
     currency: 'RUB',
   });
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>({
     cnyRate: DEFAULT_SETTINGS.cnyRate.toString(),
@@ -513,14 +514,48 @@ export default function Home() {
     return payload.data?.id ?? null;
   };
 
+  const resetOrderForm = () => {
+    setOrderForm({
+      title: '',
+      supplierId: '',
+      newSupplier: '',
+      totalAmount: '',
+      depositAmount: '',
+      depositDate: today,
+      dueDate: today,
+      description: '',
+      currency: 'RUB',
+    });
+    setEditingOrderId(null);
+    setCheckResult(null);
+  };
+
+  const startOrderEdit = (order: OrderWithSupplier) => {
+    resetMessages();
+    setCheckResult(null);
+    setEditingOrderId(order.id);
+    setOrderForm({
+      title: order.title,
+      supplierId: order.supplier_id || '',
+      newSupplier: '',
+      totalAmount: String(order.total_amount ?? ''),
+      depositAmount: String(order.deposit_amount ?? ''),
+      depositDate: order.deposit_date || today,
+      dueDate: order.due_date || today,
+      description: order.description || '',
+      currency: order.currency ?? 'RUB',
+    });
+  };
+
   const handleOrderSubmit = async () => {
     resetMessages();
     try {
       const supplier_id = await resolveSupplierId();
       const response = await fetch('/api/orders', {
-        method: 'POST',
+        method: editingOrderId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: editingOrderId ?? undefined,
           supplier_id,
           title: orderForm.title,
           total_amount: Number(orderForm.totalAmount),
@@ -533,20 +568,10 @@ export default function Home() {
       });
 
       const payload = await parseJsonSafe(response);
-      if (!response.ok) throw new Error(payload.error || 'Не удалось добавить заказ');
-      setOrderForm({
-        title: '',
-        supplierId: '',
-        newSupplier: '',
-        totalAmount: '',
-        depositAmount: '',
-        depositDate: today,
-        dueDate: today,
-        description: '',
-        currency: 'RUB',
-      });
-      setMessage('Заказ добавлен');
-      loadData();
+      if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить заказ');
+      resetOrderForm();
+      setMessage(editingOrderId ? 'Заказ обновлён' : 'Заказ добавлен');
+      await loadData();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -559,6 +584,9 @@ export default function Home() {
       const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось удалить заказ');
       setMessage('Заказ удалён');
+      if (editingOrderId === order.id) {
+        resetOrderForm();
+      }
       await loadData();
     } catch (err) {
       setError(extractErrorMessage(err));
@@ -574,6 +602,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          id: editingOrderId ?? undefined,
           supplier_id,
           title: orderForm.title || 'Новый заказ',
           total_amount: Number(orderForm.totalAmount),
@@ -1072,7 +1101,9 @@ export default function Home() {
               </div>
             </div>
             <div className="rounded-lg border border-dashed p-4">
-              <p className="mb-2 text-sm font-semibold">Добавить заказ</p>
+              <p className="mb-2 text-sm font-semibold">
+                {editingOrderId ? 'Редактировать заказ' : 'Добавить заказ'}
+              </p>
               <div className="grid grid-cols-2 gap-3">
                 <input
                   type="text"
@@ -1163,8 +1194,16 @@ export default function Home() {
                   onClick={handleOrderSubmit}
                   className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
                 >
-                  Сохранить заказ
+                  {editingOrderId ? 'Сохранить изменения' : 'Сохранить заказ'}
                 </button>
+                {editingOrderId && (
+                  <button
+                    onClick={resetOrderForm}
+                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                  >
+                    Отменить редактирование
+                  </button>
+                )}
               </div>
               {checkResult && (
                 <div
@@ -1199,12 +1238,20 @@ export default function Home() {
                           </p>
                         )}
                       </div>
-                      <button
-                        onClick={() => handleOrderDelete(order)}
-                        className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                      >
-                        Удалить
-                      </button>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => startOrderEdit(order)}
+                          className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          Редактировать
+                        </button>
+                        <button
+                          onClick={() => handleOrderDelete(order)}
+                          className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                        >
+                          Удалить
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-600 sm:grid-cols-4">
