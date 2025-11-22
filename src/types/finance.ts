@@ -26,6 +26,7 @@ export interface SupplierOrder {
   deposit_amount: number;
   deposit_date: string;
   due_date: string;
+  currency: Currency;
   description?: string | null;
   created_at?: string;
 }
@@ -70,4 +71,10 @@ export interface OrderImpact {
   ok: boolean;
   minBalance: number;
   cashGap: number;
+}
+
+export type Currency = 'RUB' | 'CNY';
+
+export interface AppSettings {
+  cnyRate: number;
 }

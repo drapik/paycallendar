@@ -1,5 +1,16 @@
 import { addDays, formatISO, isAfter, parseISO, startOfDay } from 'date-fns';
-import { Account, CashEvent, CashPlanResult, DailyStat, IncomingPayment, OrderImpact, SupplierOrder } from '@/types/finance';
+import {
+  Account,
+  AppSettings,
+  CashEvent,
+  CashPlanResult,
+  Currency,
+  DailyStat,
+  IncomingPayment,
+  OrderImpact,
+  SupplierOrder,
+} from '@/types/finance';
+import { currencyRate } from '@/lib/settings';
 
 function toDateKey(value: string | Date): string {
   return formatISO(startOfDay(typeof value === 'string' ? parseISO(value) : value), { representation: 'date' });
@@ -15,6 +26,7 @@ function collectEvents(
   accounts: Account[],
   inflows: IncomingPayment[],
   orders: SupplierOrder[],
+  rates: Record<Currency, number>,
 ): CashEvent[] {
   const events: CashEvent[] = [];
   const openingBalance = accounts.reduce((sum, account) => sum + normalizeAmount(account.balance), 0);
@@ -43,8 +55,10 @@ function collectEvents(
   });
 
   orders.forEach((order) => {
-    const deposit = normalizeAmount(order.deposit_amount);
-    const remainder = normalizeAmount(order.total_amount) - deposit;
+    const currency = order.currency ?? 'RUB';
+    const rate = rates[currency] ?? 1;
+    const deposit = normalizeAmount(order.deposit_amount) * rate;
+    const remainder = normalizeAmount(order.total_amount) * rate - deposit;
 
     if (deposit > 0) {
       events.push({
@@ -74,9 +88,14 @@ export function buildCashPlan(
   accounts: Account[],
   inflows: IncomingPayment[],
   orders: SupplierOrder[],
+  settings?: AppSettings,
   horizonDays = 120,
 ): CashPlanResult {
-  const events = collectEvents(accounts, inflows, orders).sort((a, b) => (a.date > b.date ? 1 : -1));
+  const rates: Record<Currency, number> = {
+    RUB: 1,
+    CNY: currencyRate('CNY', settings),
+  };
+  const events = collectEvents(accounts, inflows, orders, rates).sort((a, b) => (a.date > b.date ? 1 : -1));
   const openingBalance = accounts.reduce((sum, account) => sum + normalizeAmount(account.balance), 0);
 
   if (events.length === 0) {
@@ -133,6 +152,7 @@ export function evaluateOrderImpact(
   inflows: IncomingPayment[],
   orders: SupplierOrder[],
   candidate: Omit<SupplierOrder, 'id'>,
+  settings?: AppSettings,
 ): OrderImpact {
   const placeholderOrder: SupplierOrder = {
     ...candidate,
@@ -140,7 +160,7 @@ export function evaluateOrderImpact(
     supplier_id: candidate.supplier_id,
   };
 
-  const plan = buildCashPlan(accounts, inflows, [...orders, placeholderOrder]);
+  const plan = buildCashPlan(accounts, inflows, [...orders, placeholderOrder], settings);
 
   return {
     ok: plan.minBalance >= 0,

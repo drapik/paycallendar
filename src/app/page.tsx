@@ -4,14 +4,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { format, parseISO } from 'date-fns';
 import {
   Account,
-  Counterparty,
+  AppSettings,
   CashEvent,
   CashPlanResult,
+  Counterparty,
+  Currency,
   IncomingPayment,
   Supplier,
   SupplierOrder,
 } from '@/types/finance';
 import { buildCashPlan, projectBalanceOnDate } from '@/lib/cashflow';
+import { DEFAULT_SETTINGS, normalizeSettings, currencyRate } from '@/lib/settings';
 
 interface OrderFormState {
   title: string;
@@ -22,6 +25,7 @@ interface OrderFormState {
   depositDate: string;
   dueDate: string;
   description: string;
+  currency: Currency;
 }
 
 interface AccountFormState {
@@ -57,7 +61,12 @@ interface DataResponse {
   counterparties: Counterparty[];
   orders: OrderWithSupplier[];
   inflows: InflowRow[];
+  settings: AppSettings;
   error?: string;
+}
+
+interface SettingsFormState {
+  cnyRate: string;
 }
 
 const today = new Date().toISOString().slice(0, 10);
@@ -76,6 +85,16 @@ function formatDate(date: string) {
 
 function extractErrorMessage(err: unknown) {
   return err instanceof Error ? err.message : 'Неизвестная ошибка';
+}
+
+function formatCurrency(amount: number, currency: Currency) {
+  const symbol = currency === 'CNY' ? '¥' : '₽';
+  return `${Number(amount ?? 0).toLocaleString('ru-RU')} ${symbol}`;
+}
+
+function formatRubEquivalent(amount: number, currency: Currency, settings: AppSettings) {
+  const rate = currencyRate(currency, settings);
+  return (Number(amount ?? 0) * rate).toLocaleString('ru-RU');
 }
 
 async function parseJsonSafe<T = unknown>(response: Response): Promise<T> {
@@ -144,6 +163,11 @@ export default function Home() {
     depositDate: today,
     dueDate: today,
     description: '',
+    currency: 'RUB',
+  });
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settingsForm, setSettingsForm] = useState<SettingsFormState>({
+    cnyRate: DEFAULT_SETTINGS.cnyRate.toString(),
   });
 
   const totalBalance = useMemo(
@@ -155,12 +179,14 @@ export default function Home() {
     () =>
       orders.reduce(
         (acc, order) => ({
-          total: acc.total + Number(order.total_amount ?? 0),
-          deposits: acc.deposits + Number(order.deposit_amount ?? 0),
+          total:
+            acc.total + Number(order.total_amount ?? 0) * currencyRate(order.currency ?? 'RUB', settings),
+          deposits:
+            acc.deposits + Number(order.deposit_amount ?? 0) * currencyRate(order.currency ?? 'RUB', settings),
         }),
         { total: 0, deposits: 0 },
       ),
-    [orders],
+    [orders, settings],
   );
 
   const loadData = useCallback(async () => {
@@ -182,6 +208,7 @@ export default function Home() {
         ...item,
         total_amount: Number(item.total_amount ?? 0),
         deposit_amount: Number(item.deposit_amount ?? 0),
+        currency: (item.currency as Currency) || 'RUB',
       }));
 
       const normalizedInflows: IncomingPayment[] = (payload.inflows ?? []).map((item) => ({
@@ -190,11 +217,15 @@ export default function Home() {
         amount: Number(item.amount ?? 0),
       }));
 
+      const normalizedSettings = normalizeSettings(payload.settings || DEFAULT_SETTINGS);
+
       setAccounts(normalizedAccounts);
       setSuppliers(payload.suppliers || []);
       setCounterparties(payload.counterparties || []);
       setOrders(normalizedOrders);
       setInflows(normalizedInflows);
+      setSettings(normalizedSettings);
+      setSettingsForm({ cnyRate: normalizedSettings.cnyRate.toString() });
     } catch (err) {
       setError(extractErrorMessage(err));
     } finally {
@@ -207,9 +238,9 @@ export default function Home() {
   }, [loadData]);
 
   useEffect(() => {
-    const cashPlan = buildCashPlan(accounts, inflows, orders);
+    const cashPlan = buildCashPlan(accounts, inflows, orders, settings);
     setPlan(cashPlan);
-  }, [accounts, inflows, orders]);
+  }, [accounts, inflows, orders, settings]);
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(orders.length / ORDERS_PAGE_SIZE));
@@ -234,6 +265,27 @@ export default function Home() {
   const resetMessages = () => {
     setMessage(null);
     setError(null);
+  };
+
+  const handleSettingsSave = async () => {
+    resetMessages();
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cnyRate: Number(settingsForm.cnyRate) }),
+      });
+
+      const payload = await parseJsonSafe(response);
+      if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить настройки');
+
+      const normalizedSettings = normalizeSettings(payload.settings ?? settings);
+      setSettings(normalizedSettings);
+      setSettingsForm({ cnyRate: normalizedSettings.cnyRate.toString() });
+      setMessage('Настройки сохранены');
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
   };
 
   const handleAccountSubmit = async () => {
@@ -388,6 +440,7 @@ export default function Home() {
           deposit_amount: Number(orderForm.depositAmount) || 0,
           deposit_date: orderForm.depositDate,
           due_date: orderForm.dueDate,
+          currency: orderForm.currency,
           description: orderForm.description,
         }),
       });
@@ -403,6 +456,7 @@ export default function Home() {
         depositDate: today,
         dueDate: today,
         description: '',
+        currency: 'RUB',
       });
       setMessage('Заказ добавлен');
       loadData();
@@ -439,6 +493,7 @@ export default function Home() {
           deposit_amount: Number(orderForm.depositAmount) || 0,
           deposit_date: orderForm.depositDate,
           due_date: orderForm.dueDate,
+          currency: orderForm.currency,
           description: orderForm.description,
         }),
       });
@@ -543,6 +598,50 @@ export default function Home() {
             {error || message}
           </div>
         )}
+
+        <section className="mt-8 grid gap-4 lg:grid-cols-3">
+          <div className="rounded-2xl bg-white p-5 shadow-sm lg:col-span-2">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Технические настройки</p>
+                <h2 className="text-lg font-semibold text-slate-900">Курс валют и сервисные действия</h2>
+                <p className="text-sm text-slate-600">Все расчёты ведутся в рублях, суммы в юанях пересчитываются по указанному курсу.</p>
+              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                <p>Курс применяется ко всем заказам с валютой «Юань»</p>
+              </div>
+            </div>
+            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+                Курс юаня (CNY → ₽)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={settingsForm.cnyRate}
+                  onChange={(e) => setSettingsForm((prev) => ({ ...prev, cnyRate: e.target.value }))}
+                  className="w-full rounded-lg border px-3 py-2"
+                />
+              </label>
+              <button
+                onClick={handleSettingsSave}
+                className="h-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                Сохранить настройки
+              </button>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm font-semibold text-slate-900">Сервисный блок</p>
+            <p className="mt-2 text-sm text-slate-600">
+              Здесь можно разместить технические кнопки вроде выгрузки заказов или очистки базы. Добавляйте новые элементы по мере необходимости.
+            </p>
+            <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+              <p>Текущий курс: {settings.cnyRate.toLocaleString('ru-RU')} ₽ за 1 ¥</p>
+              <p>Базовая валюта: российские рубли</p>
+            </div>
+          </div>
+        </section>
 
         <section className="mt-8 grid gap-6 md:grid-cols-2">
           <div className="space-y-4 rounded-2xl bg-white p-5 shadow-sm">
@@ -826,13 +925,23 @@ export default function Home() {
                   onChange={(e) => setOrderForm((prev) => ({ ...prev, newSupplier: e.target.value }))}
                   className="rounded-lg border px-3 py-2"
                 />
-                <input
-                  type="number"
-                  placeholder="Сумма заказа"
-                  value={orderForm.totalAmount}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, totalAmount: e.target.value }))}
-                  className="rounded-lg border px-3 py-2"
-                />
+                <div className="grid grid-cols-[1fr_auto] gap-2">
+                  <input
+                    type="number"
+                    placeholder="Сумма заказа"
+                    value={orderForm.totalAmount}
+                    onChange={(e) => setOrderForm((prev) => ({ ...prev, totalAmount: e.target.value }))}
+                    className="rounded-lg border px-3 py-2"
+                  />
+                  <select
+                    value={orderForm.currency}
+                    onChange={(e) => setOrderForm((prev) => ({ ...prev, currency: e.target.value as Currency }))}
+                    className="rounded-lg border px-3 py-2 text-sm"
+                  >
+                    <option value="RUB">₽ Рубли</option>
+                    <option value="CNY">¥ Юани</option>
+                  </select>
+                </div>
                 <div className="flex flex-col gap-1">
                   <label className="text-xs font-semibold text-slate-600">Аванс поставщику</label>
                   <input
@@ -906,7 +1015,14 @@ export default function Home() {
                     <div className="flex items-center gap-3">
                       <div className="text-right">
                         <p className="text-xs text-slate-500">Срок оплаты: {formatDate(order.due_date)}</p>
-                        <p className="font-semibold">{Number(order.total_amount).toLocaleString('ru-RU')} ₽</p>
+                        <p className="font-semibold">
+                          {formatCurrency(Number(order.total_amount), order.currency ?? 'RUB')}
+                        </p>
+                        {order.currency === 'CNY' && (
+                          <p className="text-xs text-slate-500">
+                            ≈ {formatRubEquivalent(Number(order.total_amount), order.currency, settings)} ₽
+                          </p>
+                        )}
                       </div>
                       <button
                         onClick={() => handleOrderDelete(order)}
@@ -917,9 +1033,19 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-600 sm:grid-cols-4">
-                    <p>Аванс: {Number(order.deposit_amount).toLocaleString('ru-RU')} ₽</p>
+                    <p>
+                      Аванс: {formatCurrency(Number(order.deposit_amount), order.currency ?? 'RUB')}
+                      {order.currency === 'CNY' && (
+                        <span className="text-xs text-slate-500"> · ≈ {formatRubEquivalent(Number(order.deposit_amount), order.currency, settings)} ₽</span>
+                      )}
+                    </p>
                     <p>Дата аванса: {formatDate(order.deposit_date)}</p>
-                    <p>Остаток: {(Number(order.total_amount) - Number(order.deposit_amount)).toLocaleString('ru-RU')} ₽</p>
+                    <p>
+                      Остаток: {formatCurrency(Number(order.total_amount) - Number(order.deposit_amount), order.currency ?? 'RUB')}
+                      {order.currency === 'CNY' && (
+                        <span className="text-xs text-slate-500"> · ≈ {formatRubEquivalent(Number(order.total_amount) - Number(order.deposit_amount), order.currency, settings)} ₽</span>
+                      )}
+                    </p>
                     <p>Комментарий: {order.description || '—'}</p>
                   </div>
                 </div>
