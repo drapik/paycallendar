@@ -71,6 +71,57 @@ export async function POST(request: Request) {
   return NextResponse.json({ data: normalized }, { status: 201 });
 }
 
+export async function PUT(request: Request) {
+  const body = await request.json();
+  const {
+    id,
+    supplier_id,
+    title,
+    total_amount,
+    deposit_amount,
+    deposit_date,
+    due_date,
+    currency,
+    description,
+  } = body;
+
+  if (!id) {
+    return NextResponse.json({ error: 'Не указан id заказа' }, { status: 400 });
+  }
+
+  if (!title || !total_amount || !due_date) {
+    return NextResponse.json({ error: 'Не хватает данных заказа' }, { status: 400 });
+  }
+
+  const { data, error } = await supabase
+    .from('supplier_orders')
+    .update({
+      supplier_id: supplier_id || null,
+      title,
+      total_amount: Number(total_amount),
+      deposit_amount: Number(deposit_amount) || 0,
+      deposit_date: deposit_date || new Date().toISOString().slice(0, 10),
+      due_date,
+      description,
+      currency: currency === 'CNY' ? 'CNY' : 'RUB',
+    })
+    .eq('id', id)
+    .select('*, suppliers(name)')
+    .single();
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const normalizedRow = data as SupplierOrder & { suppliers?: { name?: string | null } | null };
+  const normalized = {
+    ...normalizedRow,
+    supplier_name: normalizedRow.suppliers?.name ?? null,
+  };
+
+  return NextResponse.json({ data: normalized });
+}
+
 export async function DELETE(request: Request) {
   const { searchParams } = new URL(request.url);
   const id = searchParams.get('id');

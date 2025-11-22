@@ -1,3 +1,4 @@
+import { addMonths } from 'date-fns';
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { Currency } from '@/types/finance';
@@ -221,8 +222,9 @@ async function resolveAgentName(agent: MoyskladAgent | null | undefined, token: 
   return name;
 }
 
-function toDateOnly(value: string | null | undefined) {
+function toDateOnly(value: string | Date | null | undefined) {
   if (!value) return new Date().toISOString().slice(0, 10);
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
   return value.slice(0, 10);
 }
 
@@ -289,6 +291,8 @@ export async function POST() {
         ? convertToRub(depositAmountBase, rate)
         : depositAmountBase;
       const storedCurrency: Currency = shouldConvertToRub ? 'RUB' : currency;
+      const orderDate = order.moment ? new Date(order.moment) : new Date();
+      const finalPaymentDate = addMonths(orderDate, 1);
 
       rows.push({
         supplier_id: supplierId,
@@ -296,7 +300,7 @@ export async function POST() {
         total_amount: totalAmount,
         deposit_amount: depositAmount,
         deposit_date: toDateOnly(order.moment),
-        due_date: toDateOnly(order.deliveryPlannedMoment || order.moment),
+        due_date: toDateOnly(finalPaymentDate),
         currency: storedCurrency,
         description: order.description || null,
         moysklad_id: order.id,

@@ -7,7 +7,7 @@ import { DEFAULT_SETTINGS, SETTINGS_KEY, normalizeSettings } from '@/lib/setting
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
-  const candidate = (await request.json()) as Omit<SupplierOrder, 'id' | 'supplier_name'>;
+  const candidate = (await request.json()) as Partial<SupplierOrder>;
 
   const [accounts, inflows, orders, settings] = await Promise.all([
     supabase.from('accounts').select('*'),
@@ -24,14 +24,29 @@ export async function POST(request: Request) {
   const accountsData = (accounts.data ?? []) as Account[];
   const inflowsData = (inflows.data ?? []) as IncomingPayment[];
   const ordersData = (orders.data ?? []) as SupplierOrder[];
-
-  const impact = evaluateOrderImpact(accountsData, inflowsData, ordersData, {
-    ...candidate,
+  const normalizedCandidate: Omit<SupplierOrder, 'id'> = {
+    supplier_id: candidate.supplier_id ?? null,
     supplier_name: null,
+    moysklad_id: candidate.moysklad_id ?? null,
+    title: candidate.title || 'Новый заказ',
+    deposit_date: candidate.deposit_date || new Date().toISOString().slice(0, 10),
+    due_date: candidate.due_date || new Date().toISOString().slice(0, 10),
+    description: candidate.description ?? null,
+    created_at: candidate.created_at,
     deposit_amount: Number(candidate.deposit_amount) || 0,
-    total_amount: Number(candidate.total_amount),
+    total_amount: Number(candidate.total_amount) || 0,
     currency: candidate.currency === 'CNY' ? 'CNY' : 'RUB',
-  }, normalizeSettings(settings.data ?? DEFAULT_SETTINGS));
+  };
+
+  const relevantOrders = candidate.id ? ordersData.filter((order) => order.id !== candidate.id) : ordersData;
+
+  const impact = evaluateOrderImpact(
+    accountsData,
+    inflowsData,
+    relevantOrders,
+    normalizedCandidate,
+    normalizeSettings(settings.data ?? DEFAULT_SETTINGS),
+  );
 
   return NextResponse.json({ impact });
 }
