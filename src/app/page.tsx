@@ -55,6 +55,7 @@ type OrderWithSupplier = SupplierOrder & {
   deposit_amount: number | string;
 };
 type InflowRow = IncomingPayment & { amount: number | string; counterparties?: { name?: string | null } | null };
+type CleanupTarget = 'all' | 'accounts' | 'suppliers' | 'counterparties' | 'orders' | 'inflows';
 interface DataResponse {
   accounts: AccountRow[];
   suppliers: Supplier[];
@@ -146,6 +147,7 @@ export default function Home() {
   const [accountsPage, setAccountsPage] = useState(1);
   const [inflowsPage, setInflowsPage] = useState(1);
   const [dailyPage, setDailyPage] = useState(1);
+  const [cleaningTarget, setCleaningTarget] = useState<CleanupTarget | null>(null);
 
   const [accountForm, setAccountForm] = useState<AccountFormState>({ name: '', balance: '' });
   const [inflowForm, setInflowForm] = useState<InflowFormState>({
@@ -329,6 +331,47 @@ export default function Home() {
       setError(extractErrorMessage(err));
     } finally {
       setCheckingOrders(false);
+    }
+  };
+
+  const cleanupLabels: Record<CleanupTarget, string> = {
+    all: 'всех таблицах',
+    accounts: 'счетах',
+    suppliers: 'поставщиках',
+    counterparties: 'контрагентах',
+    orders: 'заказах поставщикам',
+    inflows: 'поступлениях',
+  };
+
+  const handleCleanup = async (target: CleanupTarget) => {
+    resetMessages();
+    setCleaningTarget(target);
+
+    try {
+      const response = await fetch('/api/admin/cleanup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+
+      const payload = await parseJsonSafe(response);
+
+      if (!response.ok) {
+        throw new Error(payload.error || 'Не удалось очистить данные');
+      }
+
+      await loadData();
+
+      if (target === 'all') {
+        setMessage('Все ключевые таблицы очищены');
+      } else {
+        const deleted = Number(payload.deleted ?? 0);
+        setMessage(`Удалено ${deleted} записей в ${cleanupLabels[target]}`);
+      }
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setCleaningTarget(null);
     }
   };
 
@@ -724,6 +767,54 @@ export default function Home() {
             <p className="mt-2 text-xs text-slate-500">
               Будут подтянуты заказы поставщикам из МойСклад по указанным фильтрам (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
             </p>
+            <div className="mt-4 space-y-2">
+              <p className="text-xs font-semibold text-slate-700">Очистка данных</p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  onClick={() => handleCleanup('all')}
+                  disabled={!!cleaningTarget}
+                  className="rounded-lg border border-rose-200 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cleaningTarget === 'all' ? 'Очищаем всё…' : 'Очистить всю базу'}
+                </button>
+                <button
+                  onClick={() => handleCleanup('orders')}
+                  disabled={!!cleaningTarget}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cleaningTarget === 'orders' ? 'Удаляем заказы…' : 'Удалить заказы поставщикам'}
+                </button>
+                <button
+                  onClick={() => handleCleanup('accounts')}
+                  disabled={!!cleaningTarget}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cleaningTarget === 'accounts' ? 'Удаляем счета…' : 'Удалить счета'}
+                </button>
+                <button
+                  onClick={() => handleCleanup('inflows')}
+                  disabled={!!cleaningTarget}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cleaningTarget === 'inflows' ? 'Удаляем поступления…' : 'Удалить поступления'}
+                </button>
+                <button
+                  onClick={() => handleCleanup('suppliers')}
+                  disabled={!!cleaningTarget}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cleaningTarget === 'suppliers' ? 'Удаляем поставщиков…' : 'Удалить поставщиков'}
+                </button>
+                <button
+                  onClick={() => handleCleanup('counterparties')}
+                  disabled={!!cleaningTarget}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cleaningTarget === 'counterparties' ? 'Удаляем контрагентов…' : 'Удалить контрагентов'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">Очистка удаляет записи из таблиц без восстановления. Используйте осторожно.</p>
+            </div>
           </div>
         </section>
 

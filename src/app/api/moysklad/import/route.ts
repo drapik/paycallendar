@@ -71,17 +71,36 @@ function buildFilterQuery() {
   return [...stateFilters, agentFilter].join(';');
 }
 
+const PURCHASE_ORDER_FIELDS = [
+  'id',
+  'name',
+  'description',
+  'sum',
+  'payedSum',
+  'moment',
+  'deliveryPlannedMoment',
+  'rate',
+  'agent',
+  'state',
+];
+
 async function fetchPurchaseOrders(token: string) {
   const orders: MoyskladOrder[] = [];
   const filter = buildFilterQuery();
-  let nextUrl = `${PURCHASE_ORDER_ENDPOINT}?expand=agent,state,rate.currency&filter=${encodeURIComponent(filter)}`;
+  const url = new URL(PURCHASE_ORDER_ENDPOINT);
+
+  url.searchParams.set('expand', 'agent,state,rate.currency');
+  url.searchParams.set('fields', PURCHASE_ORDER_FIELDS.join(','));
+  url.searchParams.set('filter', filter);
+
+  let nextUrl = url.toString();
 
   while (nextUrl) {
     const response = await fetch(nextUrl, {
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
-        Accept: 'application/json',
+        Accept: 'application/json;charset=utf-8',
       },
     });
 
