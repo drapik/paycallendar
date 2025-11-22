@@ -33,6 +33,7 @@ export async function POST(request: Request) {
     deposit_amount,
     deposit_date,
     due_date,
+    currency,
     description,
   } = body;
 
@@ -51,6 +52,7 @@ export async function POST(request: Request) {
         deposit_date: deposit_date || new Date().toISOString().slice(0, 10),
         due_date,
         description,
+        currency: currency === 'CNY' ? 'CNY' : 'RUB',
       },
     ])
     .select('*, suppliers(name)')
