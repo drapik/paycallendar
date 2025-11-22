@@ -11,6 +11,8 @@ const ORGANIZATION_ID = '9953552f-c1f8-11ef-0a80-10830010cc4c';
 const STATE_NAMES = ['Не принято', 'В пути', 'Частично принято'];
 
 const supplierCache = new Map<string, string>();
+const agentCache = new Map<string, string>();
+const currencyCache = new Map<string, MoyskladCurrency>();
 
 interface MoyskladMeta {
   href?: string;
@@ -36,6 +38,10 @@ interface MoyskladPayment {
 
 interface MoyskladAgent {
   meta?: MoyskladMeta;
+  name?: string;
+}
+
+interface MoyskladCounterparty extends MoyskladAgent {
   name?: string;
 }
 
@@ -77,6 +83,7 @@ async function fetchPurchaseOrders(token: string) {
 
   url.searchParams.set('expand', 'agent,state,rate,rate.currency,payments');
   url.searchParams.set('filter', filter);
+  url.searchParams.set('limit', '100');
 
   let nextUrl = url.toString();
 
@@ -104,8 +111,21 @@ async function fetchPurchaseOrders(token: string) {
 
 function pickCurrency(order: MoyskladOrder): Currency {
   const currency = order.rate?.currency;
-  const code = currency?.isoCode || currency?.code || '';
-  const name = currency?.name || currency?.fullName || '';
+  const metaHref = currency?.meta?.href;
+  const currencyDetails = metaHref ? currencyCache.get(metaHref) : undefined;
+
+  const code =
+    currencyDetails?.isoCode ||
+    currencyDetails?.code ||
+    currency?.isoCode ||
+    currency?.code ||
+    '';
+  const name =
+    currencyDetails?.name ||
+    currencyDetails?.fullName ||
+    currency?.name ||
+    currency?.fullName ||
+    '';
 
   if (code.toUpperCase() === 'CNY' || /юан/i.test(name)) return 'CNY';
 
@@ -123,6 +143,82 @@ function parsePaymentsSum(order: MoyskladOrder) {
 function convertToRub(amount: number, rate?: number) {
   const multiplier = typeof rate === 'number' && rate > 0 ? rate : 1;
   return amount * multiplier;
+}
+
+async function fetchMoyskladEntity<T>(href: string, token: string) {
+  const response = await fetch(href, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json;charset=utf-8',
+    },
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Ошибка запроса к МойСклад: ${response.status} ${response.statusText}. ${details}`);
+  }
+
+  return (await response.json()) as T;
+}
+
+async function preloadAgents(orders: MoyskladOrder[], token: string) {
+  const hrefs = new Set<string>();
+
+  for (const order of orders) {
+    const agentHref = order.agent?.meta?.href;
+
+    if (agentHref && !agentCache.has(agentHref) && !order.agent?.name) {
+      hrefs.add(agentHref);
+    }
+  }
+
+  await Promise.all(
+    Array.from(hrefs).map(async (href) => {
+      const agent = await fetchMoyskladEntity<MoyskladCounterparty>(href, token);
+      agentCache.set(href, agent.name || 'Неизвестный поставщик');
+    }),
+  );
+}
+
+async function preloadCurrencies(orders: MoyskladOrder[], token: string) {
+  const hrefs = new Set<string>();
+
+  for (const order of orders) {
+    const currencyHref = order.rate?.currency?.meta?.href;
+
+    if (currencyHref && !currencyCache.has(currencyHref)) {
+      hrefs.add(currencyHref);
+    }
+  }
+
+  await Promise.all(
+    Array.from(hrefs).map(async (href) => {
+      const currency = await fetchMoyskladEntity<MoyskladCurrency>(href, token);
+      currencyCache.set(href, currency);
+    }),
+  );
+}
+
+async function resolveAgentName(agent: MoyskladAgent | null | undefined, token: string) {
+  if (!agent) return 'Неизвестный поставщик';
+
+  if (agent.name?.trim()) return agent.name.trim();
+
+  const href = agent.meta?.href;
+
+  if (!href) return 'Неизвестный поставщик';
+
+  if (agentCache.has(href)) {
+    return agentCache.get(href) as string;
+  }
+
+  const fetchedAgent = await fetchMoyskladEntity<MoyskladCounterparty>(href, token);
+  const name = fetchedAgent.name?.trim() || 'Неизвестный поставщик';
+
+  agentCache.set(href, name);
+
+  return name;
 }
 
 function toDateOnly(value: string | null | undefined) {
@@ -164,6 +260,8 @@ export async function POST() {
 
   try {
     const externalOrders = await fetchPurchaseOrders(token);
+    await preloadCurrencies(externalOrders, token);
+    await preloadAgents(externalOrders, token);
 
     const rows = [] as {
       supplier_id: string | null;
@@ -178,7 +276,7 @@ export async function POST() {
     }[];
 
     for (const order of externalOrders) {
-      const supplierName = order.agent?.name || 'Неизвестный поставщик';
+      const supplierName = await resolveAgentName(order.agent, token);
       const supplierId = await ensureSupplierId(supplierName);
       const currency = pickCurrency(order);
       const totalAmountBase = Number(order.sum ?? 0) / 100;
