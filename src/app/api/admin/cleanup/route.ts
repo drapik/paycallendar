@@ -14,7 +14,7 @@ const TABLES: Record<Exclude<CleanupTarget, 'all'>, string> = {
 };
 
 async function purgeTable(table: string) {
-  const { data, error } = await supabase.from(table).delete().neq('id', '').select('id');
+  const { data, error } = await supabase.from(table).delete().not('id', 'is', null).select('id');
 
   if (error) {
     throw new Error(error.message);

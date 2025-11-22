@@ -71,26 +71,12 @@ function buildFilterQuery() {
   return [...stateFilters, agentFilter].join(';');
 }
 
-const PURCHASE_ORDER_FIELDS = [
-  'id',
-  'name',
-  'description',
-  'sum',
-  'payedSum',
-  'moment',
-  'deliveryPlannedMoment',
-  'rate',
-  'agent',
-  'state',
-];
-
 async function fetchPurchaseOrders(token: string) {
   const orders: MoyskladOrder[] = [];
   const filter = buildFilterQuery();
   const url = new URL(PURCHASE_ORDER_ENDPOINT);
 
   url.searchParams.set('expand', 'agent,state,rate.currency');
-  url.searchParams.set('fields', PURCHASE_ORDER_FIELDS.join(','));
   url.searchParams.set('filter', filter);
 
   let nextUrl = url.toString();

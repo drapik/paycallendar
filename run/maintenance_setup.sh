@@ -43,15 +43,24 @@ if [ -n "${SUPABASE_SERVICE_ROLE_KEY:-}" ]; then
   fi
 fi
 
+# Inject MoySklad token if present
+if [ -n "${MOYSKLAD_TOKEN:-}" ]; then
+  if grep -q "^MOYSKLAD_TOKEN=" .env.local; then
+    sed -i "s|^MOYSKLAD_TOKEN=.*$|MOYSKLAD_TOKEN=${MOYSKLAD_TOKEN}|" .env.local
+  else
+    echo "MOYSKLAD_TOKEN=${MOYSKLAD_TOKEN}" >> .env.local
+  fi
+fi
+
 # Install npm dependencies (idempotent)
 echo "Installing npm dependencies"
 npm install --no-fund --no-audit
 
 # Print reminder if Supabase credentials are still empty
-if grep -q "^SUPABASE_URL=$" .env.local || grep -q "^SUPABASE_KEY=$" .env.local || grep -q "^SUPABASE_SERVICE_ROLE_KEY=$" .env.local; then
+if grep -q "^SUPABASE_URL=$" .env.local || grep -q "^SUPABASE_KEY=$" .env.local || grep -q "^SUPABASE_SERVICE_ROLE_KEY=$" .env.local || grep -q "^MOYSKLAD_TOKEN=$" .env.local; then
   cat <<'EOF_REMINDER'
-Note: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or SUPABASE_KEY are empty in .env.local.
-Fill them with your Supabase project URL and service role key before running the app.
+Note: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_KEY or MOYSKLAD_TOKEN are empty in .env.local.
+Fill them with your Supabase project URL, service role key and MoySklad token before running the app.
 EOF_REMINDER
 fi
 
