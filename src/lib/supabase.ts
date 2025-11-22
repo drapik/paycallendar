@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { ProxyAgent, setGlobalDispatcher } from 'undici';
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 
 const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 
@@ -11,7 +11,9 @@ if (proxyUrl) {
 }
 
 if (!supabaseUrl || !supabaseKey) {
-  throw new Error('SUPABASE_URL and SUPABASE_KEY must be set (create .env.local from .env.example)');
+  throw new Error(
+    'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (или SUPABASE_KEY) must be set (create .env.local from .env.example)',
+  );
 }
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
