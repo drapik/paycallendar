@@ -73,7 +73,7 @@ function collectEvents(
     }
   });
 
-  return events;
+  return events.filter((event) => event.date >= todayKey);
 }
 
 export function buildCashPlan(

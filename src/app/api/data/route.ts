@@ -5,6 +5,41 @@ import { DEFAULT_SETTINGS, SETTINGS_KEY, normalizeSettings } from '@/lib/setting
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  if (process.env.USE_FIXTURE_DATA === '1') {
+    const today = new Date();
+    const pastDate = new Date(today);
+    const futureDate = new Date(today);
+
+    pastDate.setDate(today.getDate() - 7);
+    futureDate.setDate(today.getDate() + 14);
+
+    return NextResponse.json({
+      accounts: [
+        { id: 'acc-1', name: 'Расчётный счёт', balance: 0, created_at: today.toISOString() },
+        { id: 'acc-2', name: 'Касса', balance: 0, created_at: today.toISOString() },
+      ],
+      suppliers: [{ id: 'sup-1', name: 'Тестовый поставщик', created_at: today.toISOString() }],
+      counterparties: [],
+      orders: [
+        {
+          id: 'ord-1',
+          supplier_id: 'sup-1',
+          supplier_name: 'Тестовый поставщик',
+          title: 'Партию товара',
+          total_amount: 39430649.39,
+          deposit_amount: 14920655.19,
+          deposit_date: pastDate.toISOString(),
+          due_date: futureDate.toISOString(),
+          currency: 'RUB',
+          description: 'Фикстура для проверки расчёта кассового разрыва',
+          created_at: today.toISOString(),
+        },
+      ],
+      inflows: [],
+      settings: normalizeSettings(DEFAULT_SETTINGS),
+    });
+  }
+
   const [accounts, suppliers, counterparties, orders, inflows, settings] = await Promise.all([
     supabase.from('accounts').select('*').order('created_at'),
     supabase.from('suppliers').select('*').order('name'),
