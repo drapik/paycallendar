@@ -21,6 +21,7 @@ export interface SupplierOrder {
   id: string;
   supplier_id: string | null;
   supplier_name?: string | null;
+  moysklad_id?: string | null;
   title: string;
   total_amount: number;
   deposit_amount: number;

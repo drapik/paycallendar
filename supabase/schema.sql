@@ -37,6 +37,9 @@ create table if not exists public.supplier_orders (
   created_at timestamptz not null default now()
 );
 
+alter table if exists public.supplier_orders
+  add column if not exists moysklad_id text unique;
+
 -- Ожидаемые поступления от контрагентов
 create table if not exists public.incoming_payments (
   id uuid primary key default gen_random_uuid(),
