@@ -15,17 +15,38 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { counterparty, amount, expected_date, kind, notes } = body;
+  const { counterparty_id, counterparty_name, amount, expected_date, kind, notes } = body;
 
-  if (!counterparty || !amount || !expected_date) {
+  if ((!counterparty_id && !counterparty_name) || !amount || !expected_date) {
     return NextResponse.json({ error: 'Не хватает данных поступления' }, { status: 400 });
+  }
+
+  let resolvedName = counterparty_name as string | null;
+
+  if (counterparty_id && !resolvedName) {
+    const { data: counterpartyRow, error: counterpartyError } = await supabase
+      .from('counterparties')
+      .select('name')
+      .eq('id', counterparty_id)
+      .single();
+
+    if (counterpartyError) {
+      return NextResponse.json({ error: counterpartyError.message }, { status: 500 });
+    }
+
+    resolvedName = counterpartyRow?.name ?? null;
+  }
+
+  if (!resolvedName) {
+    return NextResponse.json({ error: 'Контрагент не найден' }, { status: 400 });
   }
 
   const { data, error } = await supabase
     .from('incoming_payments')
     .insert([
       {
-        counterparty,
+        counterparty_id: counterparty_id || null,
+        counterparty: resolvedName,
         amount: Number(amount),
         expected_date,
         kind: kind || 'fixed',

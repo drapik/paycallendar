@@ -11,6 +11,12 @@ export interface Supplier {
   created_at?: string;
 }
 
+export interface Counterparty {
+  id: string;
+  name: string;
+  created_at?: string;
+}
+
 export interface SupplierOrder {
   id: string;
   supplier_id: string | null;
@@ -29,6 +35,7 @@ export type IncomingKind = 'fixed' | 'planned';
 
 export interface IncomingPayment {
   id: string;
+  counterparty_id?: string | null;
   counterparty: string;
   amount: number;
   expected_date: string;

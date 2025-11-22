@@ -5,15 +5,20 @@ import { DEFAULT_SETTINGS, SETTINGS_KEY, normalizeSettings } from '@/lib/setting
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const [accounts, suppliers, orders, inflows, settings] = await Promise.all([
+  const [accounts, suppliers, counterparties, orders, inflows, settings] = await Promise.all([
     supabase.from('accounts').select('*').order('created_at'),
     supabase.from('suppliers').select('*').order('name'),
-    supabase.from('supplier_orders').select('*, suppliers(name)').order('due_date', { ascending: true }),
-    supabase.from('incoming_payments').select('*').order('expected_date'),
+    supabase.from('counterparties').select('*').order('name'),
+    supabase
+      .from('supplier_orders')
+      .select('*, suppliers(name)')
+      .order('due_date', { ascending: true }),
+    supabase.from('incoming_payments').select('*, counterparties(name)').order('expected_date'),
     supabase.from('app_settings').select('*').eq('key', SETTINGS_KEY).maybeSingle(),
   ]);
 
-  const error = accounts.error || suppliers.error || orders.error || inflows.error || settings.error;
+  const error =
+    accounts.error || suppliers.error || counterparties.error || orders.error || inflows.error || settings.error;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -26,6 +31,7 @@ export async function GET() {
   return NextResponse.json({
     accounts: accounts.data,
     suppliers: suppliers.data,
+    counterparties: counterparties.data,
     orders: normalizedOrders,
     inflows: inflows.data,
     settings: normalizeSettings(settings.data ?? DEFAULT_SETTINGS),

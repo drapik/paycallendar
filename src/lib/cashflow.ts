@@ -30,6 +30,7 @@ function collectEvents(
 ): CashEvent[] {
   const events: CashEvent[] = [];
   const openingBalance = accounts.reduce((sum, account) => sum + normalizeAmount(account.balance), 0);
+  const todayKey = toDateKey(new Date());
 
   events.push({
     amount: openingBalance,
@@ -39,9 +40,15 @@ function collectEvents(
   });
 
   inflows.forEach((inflow) => {
+    const expectedDate = toDateKey(inflow.expected_date);
+
+    if (inflow.kind === 'planned' && expectedDate < todayKey) {
+      return;
+    }
+
     events.push({
       amount: normalizeAmount(inflow.amount),
-      date: toDateKey(inflow.expected_date),
+      date: expectedDate,
       description: `${inflow.counterparty} (${inflow.kind === 'fixed' ? 'фиксированный' : 'плановый'})`,
       type: 'inflow',
     });
