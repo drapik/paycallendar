@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+# Common text formats
+*.md text
+*.json text linguist-text
+*.sql text
+*.ts text diff=typescript
+*.tsx text diff=typescript
+*.css text
+*.mjs text
+
+# Assets we still want reviewed as text
+*.svg text diff=svg linguist-text
+package-lock.json text linguist-generated
