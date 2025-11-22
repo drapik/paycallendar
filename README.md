@@ -14,9 +14,9 @@
    ```bash
    npm install
    ```
-2. Скопируйте переменные окружения и укажите параметры Supabase (используйте service role ключ):
+2. Скопируйте переменные окружения в `.env.local` и укажите параметры Supabase (используйте service role ключ):
    ```bash
-   cp .env.example .env
+   cp .env.example .env.local
    # заполните SUPABASE_URL и SUPABASE_KEY
    ```
 3. Разверните структуру БД в Supabase через SQL Editor, выполнив содержимое файла `supabase/schema.sql`.

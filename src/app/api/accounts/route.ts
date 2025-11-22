@@ -55,3 +55,20 @@ export async function PATCH(request: Request) {
 
   return NextResponse.json({ data });
 }
+
+export async function DELETE(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'Не указан id счёта' }, { status: 400 });
+  }
+
+  const { error } = await supabase.from('accounts').delete().eq('id', id);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
+}

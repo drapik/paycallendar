@@ -59,6 +59,9 @@ interface DataResponse {
 
 const today = new Date().toISOString().slice(0, 10);
 const ORDERS_PAGE_SIZE = 5;
+const ACCOUNTS_PAGE_SIZE = 5;
+const INFLOWS_PAGE_SIZE = 5;
+const DAILY_PAGE_SIZE = 10;
 
 function formatDate(date: string) {
   try {
@@ -70,6 +73,22 @@ function formatDate(date: string) {
 
 function extractErrorMessage(err: unknown) {
   return err instanceof Error ? err.message : 'Неизвестная ошибка';
+}
+
+async function parseJsonSafe<T = unknown>(response: Response): Promise<T> {
+  const contentType = response.headers.get('content-type') || '';
+
+  if (contentType.includes('application/json')) {
+    return response.json() as Promise<T>;
+  }
+
+  const fallback = await response.text();
+
+  return {
+    error:
+      fallback ||
+      'Сервер вернул некорректный ответ. Проверьте подключение к БД и переменные SUPABASE_URL/SUPABASE_KEY в .env.local.',
+  } as T;
 }
 
 function Badge({ type }: { type: CashEvent['type'] }) {
@@ -99,6 +118,9 @@ export default function Home() {
   const [calculatorDate, setCalculatorDate] = useState(today);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
   const [ordersPage, setOrdersPage] = useState(1);
+  const [accountsPage, setAccountsPage] = useState(1);
+  const [inflowsPage, setInflowsPage] = useState(1);
+  const [dailyPage, setDailyPage] = useState(1);
 
   const [accountForm, setAccountForm] = useState<AccountFormState>({ name: '', balance: '' });
   const [inflowForm, setInflowForm] = useState<InflowFormState>({
@@ -124,12 +146,24 @@ export default function Home() {
     [accounts],
   );
 
+  const orderTotals = useMemo(
+    () =>
+      orders.reduce(
+        (acc, order) => ({
+          total: acc.total + Number(order.total_amount ?? 0),
+          deposits: acc.deposits + Number(order.deposit_amount ?? 0),
+        }),
+        { total: 0, deposits: 0 },
+      ),
+    [orders],
+  );
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const response = await fetch('/api/data');
-      const payload = (await response.json()) as Partial<DataResponse>;
+      const payload = (await parseJsonSafe(response)) as Partial<DataResponse>;
       if (!response.ok) {
         throw new Error(payload.error || 'Не удалось загрузить данные');
       }
@@ -175,6 +209,21 @@ export default function Home() {
     setOrdersPage((prev) => Math.min(prev, totalPages));
   }, [orders.length]);
 
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(accounts.length / ACCOUNTS_PAGE_SIZE));
+    setAccountsPage((prev) => Math.min(prev, totalPages));
+  }, [accounts.length]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(inflows.length / INFLOWS_PAGE_SIZE));
+    setInflowsPage((prev) => Math.min(prev, totalPages));
+  }, [inflows.length]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((plan?.daily.length || 0) / DAILY_PAGE_SIZE));
+    setDailyPage((prev) => Math.min(prev, totalPages));
+  }, [plan?.daily.length]);
+
   const resetMessages = () => {
     setMessage(null);
     setError(null);
@@ -192,7 +241,7 @@ export default function Home() {
         }),
       });
 
-      const payload = await response.json();
+      const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить счёт');
 
       setAccountForm({ name: '', balance: '' });
@@ -211,10 +260,23 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...account, balance: newBalance }),
       });
-      const payload = await response.json();
+      const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось обновить счёт');
       loadData();
       setMessage('Баланс обновлён');
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  };
+
+  const handleAccountDelete = async (account: Account) => {
+    resetMessages();
+    try {
+      const response = await fetch(`/api/accounts?id=${account.id}`, { method: 'DELETE' });
+      const payload = await parseJsonSafe(response);
+      if (!response.ok) throw new Error(payload.error || 'Не удалось удалить счёт');
+      setMessage('Счёт удалён');
+      await loadData();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -234,11 +296,24 @@ export default function Home() {
           notes: inflowForm.notes,
         }),
       });
-      const payload = await response.json();
+      const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось добавить поступление');
       setInflowForm({ counterparty: '', amount: '', expectedDate: today, kind: 'fixed', notes: '' });
       setMessage('Поступление добавлено');
       loadData();
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  };
+
+  const handleInflowDelete = async (inflow: IncomingPayment) => {
+    resetMessages();
+    try {
+      const response = await fetch(`/api/inflows?id=${inflow.id}`, { method: 'DELETE' });
+      const payload = await parseJsonSafe(response);
+      if (!response.ok) throw new Error(payload.error || 'Не удалось удалить поступление');
+      setMessage('Поступление удалено');
+      await loadData();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -254,7 +329,7 @@ export default function Home() {
       body: JSON.stringify({ name: orderForm.newSupplier }),
     });
 
-    const payload = await response.json();
+    const payload = await parseJsonSafe(response);
     if (!response.ok) throw new Error(payload.error || 'Не удалось создать поставщика');
     await loadData();
     return payload.data?.id ?? null;
@@ -278,7 +353,7 @@ export default function Home() {
         }),
       });
 
-      const payload = await response.json();
+      const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось добавить заказ');
       setOrderForm({
         title: '',
@@ -292,6 +367,19 @@ export default function Home() {
       });
       setMessage('Заказ добавлен');
       loadData();
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  };
+
+  const handleOrderDelete = async (order: SupplierOrder) => {
+    resetMessages();
+    try {
+      const response = await fetch(`/api/orders?id=${order.id}`, { method: 'DELETE' });
+      const payload = await parseJsonSafe(response);
+      if (!response.ok) throw new Error(payload.error || 'Не удалось удалить заказ');
+      setMessage('Заказ удалён');
+      await loadData();
     } catch (err) {
       setError(extractErrorMessage(err));
     }
@@ -316,7 +404,7 @@ export default function Home() {
         }),
       });
 
-      const payload = await response.json();
+      const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось проверить заказ');
       setCheckResult(payload.impact);
     } catch (err) {
@@ -334,6 +422,54 @@ export default function Home() {
     const start = (ordersPage - 1) * ORDERS_PAGE_SIZE;
     return orders.slice(start, start + ORDERS_PAGE_SIZE);
   }, [orders, ordersPage]);
+
+  const totalAccountPages = Math.max(1, Math.ceil(accounts.length / ACCOUNTS_PAGE_SIZE));
+  const paginatedAccounts = useMemo(() => {
+    const start = (accountsPage - 1) * ACCOUNTS_PAGE_SIZE;
+    return accounts.slice(start, start + ACCOUNTS_PAGE_SIZE);
+  }, [accounts, accountsPage]);
+
+  const totalInflowPages = Math.max(1, Math.ceil(inflows.length / INFLOWS_PAGE_SIZE));
+  const paginatedInflows = useMemo(() => {
+    const start = (inflowsPage - 1) * INFLOWS_PAGE_SIZE;
+    return inflows.slice(start, start + INFLOWS_PAGE_SIZE);
+  }, [inflows, inflowsPage]);
+
+  const totalDailyPages = Math.max(1, Math.ceil((plan?.daily.length || 0) / DAILY_PAGE_SIZE));
+  const paginatedDaily = useMemo(() => {
+    const start = (dailyPage - 1) * DAILY_PAGE_SIZE;
+    return plan?.daily.slice(start, start + DAILY_PAGE_SIZE) || [];
+  }, [dailyPage, plan?.daily]);
+
+  const chartData = useMemo(() => plan?.daily ?? [], [plan?.daily]);
+  const chartBounds = useMemo(() => {
+    if (!chartData.length) return { min: 0, max: 0 };
+    const balances = chartData.map((day) => day.balance);
+    return { min: Math.min(...balances), max: Math.max(...balances) };
+  }, [chartData]);
+
+  const chartPoints = useMemo(() => {
+    if (!chartData.length) return '';
+    const width = 800;
+    const height = 240;
+    const padding = 30;
+    const min = chartBounds.min;
+    const max = chartBounds.max === chartBounds.min ? chartBounds.min + 1 : chartBounds.max;
+    const xStep = chartData.length > 1 ? (width - padding * 2) / (chartData.length - 1) : 0;
+
+    const scaleY = (value: number) => {
+      const ratio = (value - min) / (max - min);
+      return height - padding - ratio * (height - padding * 2);
+    };
+
+    return chartData
+      .map((day, idx) => {
+        const x = padding + idx * xStep;
+        const y = scaleY(day.balance);
+        return `${x},${y}`;
+      })
+      .join(' ');
+  }, [chartBounds.max, chartBounds.min, chartData]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -376,9 +512,9 @@ export default function Home() {
               <span className="text-xs text-slate-500">Баланс можно редактировать</span>
             </div>
             <div className="space-y-3">
-              {accounts.map((account) => (
-                <div key={account.id} className="flex items-center justify-between rounded-lg border p-3">
-                  <div>
+              {paginatedAccounts.map((account) => (
+                <div key={account.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                  <div className="min-w-0">
                     <p className="font-medium">{account.name}</p>
                     <p className="text-sm text-slate-500">Создан: {formatDate(account.created_at || today)}</p>
                   </div>
@@ -390,9 +526,55 @@ export default function Home() {
                       className="w-28 rounded-lg border bg-slate-50 px-3 py-2 text-right text-sm"
                     />
                     <span className="text-slate-500">₽</span>
+                    <button
+                      onClick={() => handleAccountDelete(account)}
+                      className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                    >
+                      Удалить
+                    </button>
                   </div>
                 </div>
               ))}
+
+              {accounts.length > ACCOUNTS_PAGE_SIZE && (
+                <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-sm text-slate-600">
+                    Страница {accountsPage} из {totalAccountPages}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setAccountsPage((page) => Math.max(1, page - 1))}
+                      disabled={accountsPage === 1}
+                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Назад
+                    </button>
+                    {Array.from({ length: totalAccountPages }).map((_, idx) => {
+                      const page = idx + 1;
+                      return (
+                        <button
+                          key={page}
+                          onClick={() => setAccountsPage(page)}
+                          className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                            page === accountsPage
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : 'text-slate-700 hover:border-slate-300'
+                          }`}
+                        >
+                          {page}
+                        </button>
+                      );
+                    })}
+                    <button
+                      onClick={() => setAccountsPage((page) => Math.min(totalAccountPages, page + 1))}
+                      disabled={accountsPage === totalAccountPages}
+                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Вперёд
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="rounded-lg border border-dashed p-3">
                 <p className="mb-2 text-sm font-semibold">Добавить счёт</p>
                 <div className="grid grid-cols-2 gap-3">
@@ -427,21 +609,69 @@ export default function Home() {
               <span className="text-xs text-slate-500">Фиксированные и плановые</span>
             </div>
             <div className="space-y-3">
-              {inflows.map((item) => (
+              {paginatedInflows.map((item) => (
                 <div key={item.id} className="rounded-lg border p-3">
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-semibold">{item.counterparty}</p>
                       <p className="text-xs text-slate-500">{item.kind === 'fixed' ? 'фиксированный' : 'плановый'}</p>
                     </div>
-                    <div className="text-right">
-                      <p className="text-sm text-slate-500">Дата: {formatDate(item.expected_date)}</p>
-                      <p className="font-semibold">{Number(item.amount).toLocaleString('ru-RU')} ₽</p>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <p className="text-sm text-slate-500">Дата: {formatDate(item.expected_date)}</p>
+                        <p className="font-semibold">{Number(item.amount).toLocaleString('ru-RU')} ₽</p>
+                      </div>
+                      <button
+                        onClick={() => handleInflowDelete(item)}
+                        className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                      >
+                        Удалить
+                      </button>
                     </div>
                   </div>
                   {item.notes && <p className="mt-1 text-sm text-slate-600">{item.notes}</p>}
                 </div>
               ))}
+
+              {inflows.length > INFLOWS_PAGE_SIZE && (
+                <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-sm text-slate-600">
+                    Страница {inflowsPage} из {totalInflowPages}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setInflowsPage((page) => Math.max(1, page - 1))}
+                      disabled={inflowsPage === 1}
+                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Назад
+                    </button>
+                    {Array.from({ length: totalInflowPages }).map((_, idx) => {
+                      const page = idx + 1;
+                      return (
+                        <button
+                          key={page}
+                          onClick={() => setInflowsPage(page)}
+                          className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                            page === inflowsPage
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : 'text-slate-700 hover:border-slate-300'
+                          }`}
+                        >
+                          {page}
+                        </button>
+                      );
+                    })}
+                    <button
+                      onClick={() => setInflowsPage((page) => Math.min(totalInflowPages, page + 1))}
+                      disabled={inflowsPage === totalInflowPages}
+                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Вперёд
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-lg border border-dashed p-3">
                 <p className="mb-2 text-sm font-semibold">Добавить поступление</p>
@@ -497,6 +727,20 @@ export default function Home() {
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Заказы поставщикам</h2>
               <span className="text-xs text-slate-500">Аванс и остаток с контролем кассовых разрывов</span>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Общая сумма заказов</p>
+                <p className="text-2xl font-semibold text-slate-900">
+                  {orderTotals.total.toLocaleString('ru-RU')} ₽
+                </p>
+              </div>
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-emerald-700">Сумма авансов</p>
+                <p className="text-2xl font-semibold text-emerald-700">
+                  {orderTotals.deposits.toLocaleString('ru-RU')} ₽
+                </p>
+              </div>
             </div>
             <div className="rounded-lg border border-dashed p-4">
               <p className="mb-2 text-sm font-semibold">Добавить заказ</p>
@@ -604,9 +848,17 @@ export default function Home() {
                       <p className="font-semibold">{order.title}</p>
                       {order.supplier_name && <p className="text-sm text-slate-500">{order.supplier_name}</p>}
                     </div>
-                    <div className="text-right">
-                      <p className="text-xs text-slate-500">Срок оплаты: {formatDate(order.due_date)}</p>
-                      <p className="font-semibold">{Number(order.total_amount).toLocaleString('ru-RU')} ₽</p>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <p className="text-xs text-slate-500">Срок оплаты: {formatDate(order.due_date)}</p>
+                        <p className="font-semibold">{Number(order.total_amount).toLocaleString('ru-RU')} ₽</p>
+                      </div>
+                      <button
+                        onClick={() => handleOrderDelete(order)}
+                        className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                      >
+                        Удалить
+                      </button>
                     </div>
                   </div>
                   <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-600 sm:grid-cols-4">
@@ -726,6 +978,51 @@ export default function Home() {
             <h2 className="text-lg font-semibold">Дневная статистика (DDR)</h2>
             <span className="text-xs text-slate-500">Операции за день и итоговый баланс</span>
           </div>
+          <div className="mt-4 rounded-xl border bg-slate-50 p-4">
+            <div className="flex items-center justify-between text-sm text-slate-600">
+              <span>Динамика баланса по дням</span>
+              {plan && <span>Диапазон: {chartBounds.min.toLocaleString('ru-RU')} ₽ — {chartBounds.max.toLocaleString('ru-RU')} ₽</span>}
+            </div>
+            <div className="mt-3 overflow-hidden rounded-lg bg-white">
+              {chartData.length ? (
+                <svg viewBox="0 0 800 240" className="h-56 w-full">
+                  <defs>
+                    <linearGradient id="balanceGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#34d399" stopOpacity="0.3" />
+                      <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
+                    </linearGradient>
+                  </defs>
+                  <rect x="0" y="0" width="800" height="240" fill="#f8fafc" />
+                  <polyline
+                    points={`30,${240 - 30} 770,${240 - 30}`}
+                    fill="none"
+                    stroke="#e2e8f0"
+                    strokeWidth="1"
+                    strokeDasharray="4 4"
+                  />
+                  {chartPoints && (
+                    <>
+                      <polyline
+                        points={`30,210 ${chartPoints} 770,210`}
+                        fill="url(#balanceGradient)"
+                        stroke="none"
+                      />
+                      <polyline
+                        points={chartPoints}
+                        fill="none"
+                        stroke="#10b981"
+                        strokeWidth="3"
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                      />
+                    </>
+                  )}
+                </svg>
+              ) : (
+                <p className="text-sm text-slate-500">Нет данных для графика</p>
+              )}
+            </div>
+          </div>
           <div className="mt-4 overflow-x-auto">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead>
@@ -736,7 +1033,7 @@ export default function Home() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {plan?.daily.map((day) => (
+                {paginatedDaily.map((day) => (
                   <tr key={day.date}>
                     <td className="whitespace-nowrap px-3 py-2 font-medium text-slate-700">{formatDate(day.date)}</td>
                     <td className="px-3 py-2">
@@ -764,6 +1061,45 @@ export default function Home() {
               </tbody>
             </table>
           </div>
+          {plan && plan.daily.length > DAILY_PAGE_SIZE && (
+            <div className="mt-4 flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="text-sm text-slate-600">
+                Страница {dailyPage} из {totalDailyPages}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setDailyPage((page) => Math.max(1, page - 1))}
+                  disabled={dailyPage === 1}
+                  className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Назад
+                </button>
+                {Array.from({ length: totalDailyPages }).map((_, idx) => {
+                  const page = idx + 1;
+                  return (
+                    <button
+                      key={page}
+                      onClick={() => setDailyPage(page)}
+                      className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                        page === dailyPage
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          : 'text-slate-700 hover:border-slate-300'
+                      }`}
+                    >
+                      {page}
+                    </button>
+                  );
+                })}
+                <button
+                  onClick={() => setDailyPage((page) => Math.min(totalDailyPages, page + 1))}
+                  disabled={dailyPage === totalDailyPages}
+                  className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Вперёд
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       </div>
     </div>

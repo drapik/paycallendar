@@ -41,3 +41,20 @@ export async function POST(request: Request) {
 
   return NextResponse.json({ data }, { status: 201 });
 }
+
+export async function DELETE(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const id = searchParams.get('id');
+
+  if (!id) {
+    return NextResponse.json({ error: 'Не указан id поступления' }, { status: 400 });
+  }
+
+  const { error } = await supabase.from('incoming_payments').delete().eq('id', id);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
+}
