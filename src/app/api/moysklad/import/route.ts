@@ -7,12 +7,8 @@ export const dynamic = 'force-dynamic';
 const MOYSKLAD_BASE = 'https://api.moysklad.ru/api/remap/1.2';
 const PURCHASE_ORDER_ENDPOINT = `${MOYSKLAD_BASE}/entity/purchaseorder`;
 
-const AGENT_ID = '9953552f-c1f8-11ef-0a80-10830010cc4c';
-const STATE_IDS = [
-  '58aee5f8-d27c-11ef-0a80-0883000f7902',
-  '58aee70e-d27c-11ef-0a80-0883000f7903',
-  '58aee762-d27c-11ef-0a80-0883000f7904',
-];
+const ORGANIZATION_ID = '9953552f-c1f8-11ef-0a80-10830010cc4c';
+const STATE_NAMES = ['Не принято', 'В пути', 'Частично принято'];
 
 const supplierCache = new Map<string, string>();
 
@@ -31,6 +27,11 @@ interface MoyskladCurrency {
 interface MoyskladRate {
   currency?: MoyskladCurrency;
   value?: number;
+}
+
+interface MoyskladPayment {
+  meta?: MoyskladMeta;
+  linkedSum?: number;
 }
 
 interface MoyskladAgent {
@@ -54,6 +55,7 @@ interface MoyskladOrder {
   rate?: MoyskladRate | null;
   agent?: MoyskladAgent | null;
   state?: MoyskladState | null;
+  payments?: MoyskladPayment[];
 }
 
 interface MoyskladListResponse<T> {
@@ -62,13 +64,10 @@ interface MoyskladListResponse<T> {
 }
 
 function buildFilterQuery() {
-  const agentFilter = `agent=${PURCHASE_ORDER_ENDPOINT.replace('/entity/purchaseorder', '')}/entity/counterparty/${AGENT_ID}`;
-  const stateFilters = STATE_IDS.map(
-    (id) =>
-      `state=${PURCHASE_ORDER_ENDPOINT}/metadata/states/${id}`,
-  );
+  const organizationFilter = `organization=${MOYSKLAD_BASE}/entity/organization/${ORGANIZATION_ID}`;
+  const stateFilters = STATE_NAMES.map((name) => `state.name=${name}`);
 
-  return [...stateFilters, agentFilter].join(';');
+  return [...stateFilters, organizationFilter].join(';');
 }
 
 async function fetchPurchaseOrders(token: string) {
@@ -76,7 +75,7 @@ async function fetchPurchaseOrders(token: string) {
   const filter = buildFilterQuery();
   const url = new URL(PURCHASE_ORDER_ENDPOINT);
 
-  url.searchParams.set('expand', 'agent,state,rate.currency');
+  url.searchParams.set('expand', 'agent,state,rate,rate.currency,payments');
   url.searchParams.set('filter', filter);
 
   let nextUrl = url.toString();
@@ -111,6 +110,19 @@ function pickCurrency(order: MoyskladOrder): Currency {
   if (code.toUpperCase() === 'CNY' || /юан/i.test(name)) return 'CNY';
 
   return 'RUB';
+}
+
+function parsePaymentsSum(order: MoyskladOrder) {
+  if (order.payments?.length) {
+    return order.payments.reduce((total, payment) => total + Number(payment.linkedSum ?? 0), 0) / 100;
+  }
+
+  return Number(order.payedSum ?? 0) / 100;
+}
+
+function convertToRub(amount: number, rate?: number) {
+  const multiplier = typeof rate === 'number' && rate > 0 ? rate : 1;
+  return amount * multiplier;
 }
 
 function toDateOnly(value: string | null | undefined) {
@@ -169,8 +181,16 @@ export async function POST() {
       const supplierName = order.agent?.name || 'Неизвестный поставщик';
       const supplierId = await ensureSupplierId(supplierName);
       const currency = pickCurrency(order);
-      const totalAmount = Number(order.sum ?? 0) / 100;
-      const depositAmount = Number(order.payedSum ?? 0) / 100;
+      const totalAmountBase = Number(order.sum ?? 0) / 100;
+      const depositAmountBase = parsePaymentsSum(order);
+
+      const rate = order.rate?.value;
+      const shouldConvertToRub = currency !== 'RUB' && typeof rate === 'number' && rate > 0;
+      const totalAmount = shouldConvertToRub ? convertToRub(totalAmountBase, rate) : totalAmountBase;
+      const depositAmount = shouldConvertToRub
+        ? convertToRub(depositAmountBase, rate)
+        : depositAmountBase;
+      const storedCurrency: Currency = shouldConvertToRub ? 'RUB' : currency;
 
       rows.push({
         supplier_id: supplierId,
@@ -179,7 +199,7 @@ export async function POST() {
         deposit_amount: depositAmount,
         deposit_date: toDateOnly(order.moment),
         due_date: toDateOnly(order.deliveryPlannedMoment || order.moment),
-        currency,
+        currency: storedCurrency,
         description: order.description || null,
         moysklad_id: order.id,
       });
