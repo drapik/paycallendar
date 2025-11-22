@@ -643,7 +643,7 @@ export default function Home() {
                   </div>
                   <ul className="mt-1 space-y-1 text-sm text-slate-600">
                     {day.events.map((event, idx) => (
-                      <li key={idx} className="flex items-center justify-between">
+                      <li key={idx} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                         <span className="flex items-center gap-2">
                           <Badge type={event.type} /> {event.description}
                         </span>
