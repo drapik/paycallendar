@@ -58,6 +58,7 @@ interface DataResponse {
 }
 
 const today = new Date().toISOString().slice(0, 10);
+const ORDERS_PAGE_SIZE = 5;
 
 function formatDate(date: string) {
   try {
@@ -89,7 +90,7 @@ function Badge({ type }: { type: CashEvent['type'] }) {
 export default function Home() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  const [orders, setOrders] = useState<SupplierOrder[]>([]);
+  const [orders, setOrders] = useState<OrderWithSupplier[]>([]);
   const [inflows, setInflows] = useState<IncomingPayment[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -97,6 +98,7 @@ export default function Home() {
   const [plan, setPlan] = useState<CashPlanResult | null>(null);
   const [calculatorDate, setCalculatorDate] = useState(today);
   const [checkResult, setCheckResult] = useState<CheckResult | null>(null);
+  const [ordersPage, setOrdersPage] = useState(1);
 
   const [accountForm, setAccountForm] = useState<AccountFormState>({ name: '', balance: '' });
   const [inflowForm, setInflowForm] = useState<InflowFormState>({
@@ -167,6 +169,11 @@ export default function Home() {
     const cashPlan = buildCashPlan(accounts, inflows, orders);
     setPlan(cashPlan);
   }, [accounts, inflows, orders]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(orders.length / ORDERS_PAGE_SIZE));
+    setOrdersPage((prev) => Math.min(prev, totalPages));
+  }, [orders.length]);
 
   const resetMessages = () => {
     setMessage(null);
@@ -321,6 +328,12 @@ export default function Home() {
     if (!plan) return null;
     return projectBalanceOnDate(plan, calculatorDate || today);
   }, [plan, calculatorDate]);
+
+  const totalOrderPages = Math.max(1, Math.ceil(orders.length / ORDERS_PAGE_SIZE));
+  const paginatedOrders = useMemo(() => {
+    const start = (ordersPage - 1) * ORDERS_PAGE_SIZE;
+    return orders.slice(start, start + ORDERS_PAGE_SIZE);
+  }, [orders, ordersPage]);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -521,25 +534,34 @@ export default function Home() {
                   onChange={(e) => setOrderForm((prev) => ({ ...prev, totalAmount: e.target.value }))}
                   className="rounded-lg border px-3 py-2"
                 />
-                <input
-                  type="number"
-                  placeholder="Аванс поставщику"
-                  value={orderForm.depositAmount}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, depositAmount: e.target.value }))}
-                  className="rounded-lg border px-3 py-2"
-                />
-                <input
-                  type="date"
-                  value={orderForm.depositDate}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, depositDate: e.target.value }))}
-                  className="rounded-lg border px-3 py-2"
-                />
-                <input
-                  type="date"
-                  value={orderForm.dueDate}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, dueDate: e.target.value }))}
-                  className="rounded-lg border px-3 py-2"
-                />
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-slate-600">Аванс поставщику</label>
+                  <input
+                    type="number"
+                    placeholder="Аванс поставщику"
+                    value={orderForm.depositAmount}
+                    onChange={(e) => setOrderForm((prev) => ({ ...prev, depositAmount: e.target.value }))}
+                    className="rounded-lg border px-3 py-2"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-slate-600">Дата аванса</label>
+                  <input
+                    type="date"
+                    value={orderForm.depositDate}
+                    onChange={(e) => setOrderForm((prev) => ({ ...prev, depositDate: e.target.value }))}
+                    className="rounded-lg border px-3 py-2"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs font-semibold text-slate-600">Срок оплаты</label>
+                  <input
+                    type="date"
+                    value={orderForm.dueDate}
+                    onChange={(e) => setOrderForm((prev) => ({ ...prev, dueDate: e.target.value }))}
+                    className="rounded-lg border px-3 py-2"
+                  />
+                </div>
                 <textarea
                   placeholder="Комментарий"
                   value={orderForm.description}
@@ -575,7 +597,7 @@ export default function Home() {
             </div>
 
             <div className="space-y-3">
-              {orders.map((order) => (
+              {paginatedOrders.map((order) => (
                 <div key={order.id} className="rounded-lg border p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div>
@@ -583,7 +605,7 @@ export default function Home() {
                       {order.supplier_name && <p className="text-sm text-slate-500">{order.supplier_name}</p>}
                     </div>
                     <div className="text-right">
-                      <p className="text-xs text-slate-500">Срок: {formatDate(order.due_date)}</p>
+                      <p className="text-xs text-slate-500">Срок оплаты: {formatDate(order.due_date)}</p>
                       <p className="font-semibold">{Number(order.total_amount).toLocaleString('ru-RU')} ₽</p>
                     </div>
                   </div>
@@ -595,6 +617,46 @@ export default function Home() {
                   </div>
                 </div>
               ))}
+
+              {orders.length > ORDERS_PAGE_SIZE && (
+                <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="text-sm text-slate-600">
+                    Страница {ordersPage} из {totalOrderPages}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setOrdersPage((page) => Math.max(1, page - 1))}
+                      disabled={ordersPage === 1}
+                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Назад
+                    </button>
+                    {Array.from({ length: totalOrderPages }).map((_, idx) => {
+                      const page = idx + 1;
+                      return (
+                        <button
+                          key={page}
+                          onClick={() => setOrdersPage(page)}
+                          className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                            page === ordersPage
+                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                              : 'text-slate-700 hover:border-slate-300'
+                          }`}
+                        >
+                          {page}
+                        </button>
+                      );
+                    })}
+                    <button
+                      onClick={() => setOrdersPage((page) => Math.min(totalOrderPages, page + 1))}
+                      disabled={ordersPage === totalOrderPages}
+                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Вперёд
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
