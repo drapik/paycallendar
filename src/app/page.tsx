@@ -99,7 +99,9 @@ function formatRubEquivalent(amount: number, currency: Currency, settings: AppSe
   return (Number(amount ?? 0) * rate).toLocaleString('ru-RU');
 }
 
-async function parseJsonSafe<T = unknown>(response: Response): Promise<T> {
+type ParsedJson = { error?: string; [key: string]: any };
+
+async function parseJsonSafe<T extends ParsedJson = ParsedJson>(response: Response): Promise<T> {
   const contentType = response.headers.get('content-type') || '';
 
   if (contentType.includes('application/json')) {

@@ -86,7 +86,7 @@ async function fetchPurchaseOrders(token: string) {
   url.searchParams.set('filter', filter);
   url.searchParams.set('limit', '100');
 
-  let nextUrl = url.toString();
+  let nextUrl: string | null = url.toString();
 
   while (nextUrl) {
     const response = await fetch(nextUrl, {
