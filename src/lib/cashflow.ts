@@ -51,8 +51,9 @@ function collectEvents(
     const rate = rates[currency] ?? 1;
     const deposit = normalizeAmount(order.deposit_amount) * rate;
     const remainder = normalizeAmount(order.total_amount) * rate - deposit;
+    const depositPaid = Boolean(order.deposit_paid);
 
-    if (deposit > 0) {
+    if (deposit > 0 && !depositPaid) {
       events.push({
         amount: -deposit,
         date: toDateKey(order.deposit_date || new Date()),

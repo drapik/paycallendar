@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { format, parseISO } from 'date-fns';
 import {
   Account,
@@ -16,6 +16,7 @@ import {
 } from '@/types/finance';
 import { buildCashPlan, projectBalanceOnDate } from '@/lib/cashflow';
 import { DEFAULT_SETTINGS, normalizeSettings, currencyRate } from '@/lib/settings';
+import { getBrowserSupabase } from '@/lib/supabaseBrowser';
 
 interface OrderFormState {
   title: string;
@@ -23,6 +24,7 @@ interface OrderFormState {
   newSupplier: string;
   totalAmount: string;
   depositAmount: string;
+  depositPaid: boolean;
   depositDate: string;
   dueDate: string;
   description: string;
@@ -76,6 +78,13 @@ const ORDERS_PAGE_SIZE = 5;
 const ACCOUNTS_PAGE_SIZE = 5;
 const INFLOWS_PAGE_SIZE = 5;
 const DAILY_PAGE_SIZE = 10;
+const DEFAULT_CHART_WINDOW = 30;
+const MIN_CHART_WINDOW = 7;
+const CHART_WIDTH = 820;
+const CHART_HEIGHT = 280;
+const CHART_MARGIN = { top: 20, right: 24, bottom: 40, left: 72 };
+const CHART_Y_TICKS = 5;
+const CHART_X_TICKS = 6;
 
 function formatDate(date: string) {
   try {
@@ -151,6 +160,9 @@ export default function Home() {
   const [inflowsPage, setInflowsPage] = useState(1);
   const [dailyPage, setDailyPage] = useState(1);
   const [cleaningTarget, setCleaningTarget] = useState<CleanupTarget | null>(null);
+  const [chartWindowSize, setChartWindowSize] = useState(DEFAULT_CHART_WINDOW);
+  const [chartWindowStart, setChartWindowStart] = useState(0);
+  const [hoveredChartIndex, setHoveredChartIndex] = useState<number | null>(null);
 
   const [accountForm, setAccountForm] = useState<AccountFormState>({ name: '', balance: '' });
   const [inflowForm, setInflowForm] = useState<InflowFormState>({
@@ -167,16 +179,20 @@ export default function Home() {
     newSupplier: '',
     totalAmount: '',
     depositAmount: '',
+    depositPaid: false,
     depositDate: today,
     dueDate: today,
     description: '',
     currency: 'RUB',
   });
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  const [editingOrderUpdatedAt, setEditingOrderUpdatedAt] = useState<string | null>(null);
+  const [editingOrderStale, setEditingOrderStale] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>({
     cnyRate: DEFAULT_SETTINGS.cnyRate.toString(),
   });
+  const [activeTab, setActiveTab] = useState<'orders' | 'accounts' | 'inflows'>('orders');
 
   const totalBalance = useMemo(
     () => accounts.reduce((sum, item) => sum + Number(item.balance ?? 0), 0),
@@ -189,10 +205,18 @@ export default function Home() {
         (acc, order) => ({
           total:
             acc.total + Number(order.total_amount ?? 0) * currencyRate(order.currency ?? 'RUB', settings),
-          deposits:
-            acc.deposits + Number(order.deposit_amount ?? 0) * currencyRate(order.currency ?? 'RUB', settings),
+          depositsPlanned:
+            acc.depositsPlanned +
+            (order.deposit_paid
+              ? 0
+              : Number(order.deposit_amount ?? 0) * currencyRate(order.currency ?? 'RUB', settings)),
+          depositsPaid:
+            acc.depositsPaid +
+            (order.deposit_paid
+              ? Number(order.deposit_amount ?? 0) * currencyRate(order.currency ?? 'RUB', settings)
+              : 0),
         }),
-        { total: 0, deposits: 0 },
+        { total: 0, depositsPlanned: 0, depositsPaid: 0 },
       ),
     [orders, settings],
   );
@@ -216,6 +240,7 @@ export default function Home() {
         ...item,
         total_amount: Number(item.total_amount ?? 0),
         deposit_amount: Number(item.deposit_amount ?? 0),
+        deposit_paid: Boolean(item.deposit_paid),
         currency: (item.currency as Currency) || 'RUB',
       }));
 
@@ -246,9 +271,51 @@ export default function Home() {
   }, [loadData]);
 
   useEffect(() => {
+    const supabaseBrowser = getBrowserSupabase();
+    if (!supabaseBrowser) return;
+
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleRefresh = () => {
+      if (refreshTimer) return;
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        loadData();
+      }, 200);
+    };
+
+    const channel = supabaseBrowser
+      .channel('paycallendar-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'accounts' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'suppliers' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'counterparties' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'supplier_orders' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'incoming_payments' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, scheduleRefresh)
+      .subscribe();
+
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      supabaseBrowser.removeChannel(channel);
+    };
+  }, [loadData]);
+
+  useEffect(() => {
     const cashPlan = buildCashPlan(accounts, inflows, orders, settings);
     setPlan(cashPlan);
   }, [accounts, inflows, orders, settings]);
+
+  useEffect(() => {
+    if (!editingOrderId) {
+      setEditingOrderStale(false);
+      return;
+    }
+
+    const latest = orders.find((order) => order.id === editingOrderId);
+    if (!latest?.updated_at || !editingOrderUpdatedAt) return;
+
+    setEditingOrderStale(latest.updated_at !== editingOrderUpdatedAt);
+  }, [editingOrderId, editingOrderUpdatedAt, orders]);
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil(orders.length / ORDERS_PAGE_SIZE));
@@ -405,10 +472,13 @@ export default function Home() {
   const handleAccountUpdate = async (account: Account, newBalance: number) => {
     resetMessages();
     try {
+      if (!account.updated_at) {
+        throw new Error('Не удалось обновить счёт: обновите данные и попробуйте ещё раз.');
+      }
       const response = await fetch('/api/accounts', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...account, balance: newBalance }),
+        body: JSON.stringify({ ...account, balance: newBalance, updated_at: account.updated_at }),
       });
       const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось обновить счёт');
@@ -524,12 +594,15 @@ export default function Home() {
       newSupplier: '',
       totalAmount: '',
       depositAmount: '',
+      depositPaid: false,
       depositDate: today,
       dueDate: today,
       description: '',
       currency: 'RUB',
     });
     setEditingOrderId(null);
+    setEditingOrderUpdatedAt(null);
+    setEditingOrderStale(false);
     setCheckResult(null);
   };
 
@@ -537,12 +610,15 @@ export default function Home() {
     resetMessages();
     setCheckResult(null);
     setEditingOrderId(order.id);
+    setEditingOrderUpdatedAt(order.updated_at ?? null);
+    setEditingOrderStale(false);
     setOrderForm({
       title: order.title,
       supplierId: order.supplier_id || '',
       newSupplier: '',
       totalAmount: String(order.total_amount ?? ''),
       depositAmount: String(order.deposit_amount ?? ''),
+      depositPaid: Boolean(order.deposit_paid),
       depositDate: order.deposit_date || today,
       dueDate: order.due_date || today,
       description: order.description || '',
@@ -554,6 +630,9 @@ export default function Home() {
     resetMessages();
     try {
       const supplier_id = await resolveSupplierId();
+      if (editingOrderId && !editingOrderUpdatedAt) {
+        throw new Error('Не удалось сохранить: обновите данные и попробуйте ещё раз.');
+      }
       const response = await fetch('/api/orders', {
         method: editingOrderId ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -563,10 +642,12 @@ export default function Home() {
           title: orderForm.title,
           total_amount: Number(orderForm.totalAmount),
           deposit_amount: Number(orderForm.depositAmount) || 0,
+          deposit_paid: orderForm.depositPaid,
           deposit_date: orderForm.depositDate,
           due_date: orderForm.dueDate,
           currency: orderForm.currency,
           description: orderForm.description,
+          updated_at: editingOrderUpdatedAt ?? undefined,
         }),
       });
 
@@ -610,6 +691,7 @@ export default function Home() {
           title: orderForm.title || 'Новый заказ',
           total_amount: Number(orderForm.totalAmount),
           deposit_amount: Number(orderForm.depositAmount) || 0,
+          deposit_paid: orderForm.depositPaid,
           deposit_date: orderForm.depositDate,
           due_date: orderForm.dueDate,
           currency: orderForm.currency,
@@ -655,36 +737,159 @@ export default function Home() {
   }, [dailyPage, plan?.daily]);
 
   const chartData = useMemo(() => plan?.daily ?? [], [plan?.daily]);
-  const chartBounds = useMemo(() => {
-    if (!chartData.length) return { min: 0, max: 0 };
-    const balances = chartData.map((day) => day.balance);
-    return { min: Math.min(...balances), max: Math.max(...balances) };
-  }, [chartData]);
-
   const cashGapDays = useMemo(() => plan?.daily.filter((day) => day.balance < 0) ?? [], [plan?.daily]);
 
-  const chartPoints = useMemo(() => {
-    if (!chartData.length) return { polyline: '', points: [] as { x: number; y: number; day: DailyStat }[] };
-    const width = 800;
-    const height = 240;
-    const padding = 30;
-    const min = chartBounds.min;
-    const max = chartBounds.max === chartBounds.min ? chartBounds.min + 1 : chartBounds.max;
-    const xStep = chartData.length > 1 ? (width - padding * 2) / (chartData.length - 1) : 0;
+  useEffect(() => {
+    if (!chartData.length) {
+      setChartWindowSize(DEFAULT_CHART_WINDOW);
+      setChartWindowStart(0);
+      setHoveredChartIndex(null);
+      return;
+    }
 
-    const scaleY = (value: number) => {
-      const ratio = (value - min) / (max - min);
-      return height - padding - ratio * (height - padding * 2);
-    };
+    const minWindow = Math.min(MIN_CHART_WINDOW, chartData.length);
+    const fallback = Math.min(DEFAULT_CHART_WINDOW, chartData.length);
 
-    const points = chartData.map((day, idx) => {
-      const x = padding + idx * xStep;
-      const y = scaleY(day.balance);
-      return { x, y, day };
+    setChartWindowSize((prev) => {
+      const next = Math.min(Math.max(prev || fallback, minWindow), chartData.length);
+      return next;
+    });
+  }, [chartData.length]);
+
+  useEffect(() => {
+    if (!chartData.length) return;
+    const maxStart = Math.max(0, chartData.length - chartWindowSize);
+    setChartWindowStart((prev) => Math.min(prev, maxStart));
+  }, [chartData.length, chartWindowSize]);
+
+  const visibleChartData = useMemo(
+    () => chartData.slice(chartWindowStart, chartWindowStart + chartWindowSize),
+    [chartData, chartWindowStart, chartWindowSize],
+  );
+
+  useEffect(() => {
+    if (hoveredChartIndex === null) return;
+    if (hoveredChartIndex >= visibleChartData.length) {
+      setHoveredChartIndex(null);
+    }
+  }, [hoveredChartIndex, visibleChartData.length]);
+
+  const chartBounds = useMemo(() => {
+    if (!visibleChartData.length) return { min: 0, max: 0 };
+    const balances = visibleChartData.map((day) => day.balance);
+    const min = Math.min(...balances);
+    const max = Math.max(...balances);
+    return { min, max };
+  }, [visibleChartData]);
+
+  const chartScale = useMemo(() => {
+    const range = chartBounds.max - chartBounds.min || 1;
+    const padding = range * 0.1;
+    return { min: chartBounds.min - padding, max: chartBounds.max + padding };
+  }, [chartBounds.max, chartBounds.min]);
+
+  const chartMetrics = useMemo(() => {
+    if (!visibleChartData.length) {
+      return {
+        points: [] as { x: number; y: number; day: DailyStat }[],
+        polyline: '',
+        area: '',
+        xTicks: [] as { x: number; label: string }[],
+        yTicks: [] as { y: number; label: string }[],
+        xStep: 0,
+      };
+    }
+
+    const { top, right, bottom, left } = CHART_MARGIN;
+    const innerWidth = CHART_WIDTH - left - right;
+    const innerHeight = CHART_HEIGHT - top - bottom;
+    const range = chartScale.max - chartScale.min || 1;
+    const xStep = visibleChartData.length > 1 ? innerWidth / (visibleChartData.length - 1) : 0;
+
+    const scaleX = (idx: number) => left + idx * xStep;
+    const scaleY = (value: number) => top + ((chartScale.max - value) / range) * innerHeight;
+
+    const points = visibleChartData.map((day, idx) => ({
+      x: scaleX(idx),
+      y: scaleY(day.balance),
+      day,
+    }));
+    const polyline = points.map((point) => `${point.x},${point.y}`).join(' ');
+    const baseline = top + innerHeight;
+    const area = points.length
+      ? `${points[0].x},${baseline} ${polyline} ${points[points.length - 1].x},${baseline}`
+      : '';
+
+    const yTickCount = Math.max(2, CHART_Y_TICKS);
+    const yTicks = Array.from({ length: yTickCount }).map((_, idx) => {
+      const value = chartScale.min + (range * idx) / (yTickCount - 1);
+      return { y: scaleY(value), label: value.toLocaleString('ru-RU') };
     });
 
-    return { polyline: points.map((point) => `${point.x},${point.y}`).join(' '), points };
-  }, [chartBounds.max, chartBounds.min, chartData]);
+    const xTickCount = Math.min(CHART_X_TICKS, visibleChartData.length);
+    const xIndexes = xTickCount > 1
+      ? Array.from({ length: xTickCount }).map((_, idx) =>
+          Math.round((visibleChartData.length - 1) * (idx / (xTickCount - 1))),
+        )
+      : [0];
+    const xTicks = Array.from(new Set(xIndexes)).map((idx) => ({
+      x: scaleX(idx),
+      label: formatDate(visibleChartData[idx].date),
+    }));
+
+    return { points, polyline, area, xTicks, yTicks, xStep };
+  }, [chartScale.max, chartScale.min, visibleChartData]);
+
+  const handleChartMove = useCallback(
+    (event: MouseEvent<SVGSVGElement>) => {
+      if (!chartMetrics.points.length) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const relativeX = ((event.clientX - rect.left) / rect.width) * CHART_WIDTH;
+      const clampedX = Math.max(CHART_MARGIN.left, Math.min(CHART_WIDTH - CHART_MARGIN.right, relativeX));
+      const index = chartMetrics.xStep ? Math.round((clampedX - CHART_MARGIN.left) / chartMetrics.xStep) : 0;
+      const safeIndex = Math.max(0, Math.min(chartMetrics.points.length - 1, index));
+      setHoveredChartIndex(safeIndex);
+    },
+    [chartMetrics.points.length, chartMetrics.xStep],
+  );
+
+  const chartRangeLabel =
+    visibleChartData.length > 0
+      ? `${formatDate(visibleChartData[0].date)} — ${formatDate(visibleChartData[visibleChartData.length - 1].date)}`
+      : '—';
+  const chartWindowMin = Math.min(MIN_CHART_WINDOW, chartData.length || MIN_CHART_WINDOW);
+  const chartWindowMax = Math.max(chartData.length, chartWindowMin);
+  const chartWindowSizeValue = Math.min(chartWindowSize, chartWindowMax);
+  const maxChartStart = Math.max(0, chartData.length - chartWindowSizeValue);
+
+  const hoveredPoint = hoveredChartIndex !== null ? chartMetrics.points[hoveredChartIndex] : null;
+  const tooltipWidth = 170;
+  const tooltipHeight = 46;
+  const tooltipOffset = 12;
+  const tooltipX = hoveredPoint
+    ? Math.min(
+        CHART_WIDTH - CHART_MARGIN.right - tooltipWidth,
+        Math.max(CHART_MARGIN.left, hoveredPoint.x + tooltipOffset),
+      )
+    : 0;
+  const tooltipY = hoveredPoint
+    ? Math.min(
+        CHART_HEIGHT - CHART_MARGIN.bottom - tooltipHeight,
+        Math.max(CHART_MARGIN.top, hoveredPoint.y - tooltipHeight / 2),
+      )
+    : 0;
+
+  const inputClassName =
+    'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400';
+  const inputMutedClassName =
+    'w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900';
+  const textareaClassName = `${inputClassName} min-h-[88px]`;
+  const tabButtonClass = (tab: 'orders' | 'accounts' | 'inflows') =>
+    `rounded-lg border px-4 py-2 text-sm font-semibold transition ${
+      activeTab === tab
+        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+        : 'border-slate-200 text-slate-600 hover:border-slate-300'
+    }`;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
@@ -717,36 +922,6 @@ export default function Home() {
             {error || message}
           </div>
         )}
-
-        <div className="mt-6 rounded-2xl border border-emerald-200 bg-white p-5 shadow-sm">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="space-y-1">
-              <p className="text-xs uppercase tracking-wide text-emerald-700">Выгрузка из МойСклад</p>
-              <h2 className="text-lg font-semibold text-slate-900">Подтяните заказы поставщикам</h2>
-              <p className="text-sm text-slate-600">
-                Кнопки ниже сразу вызывают импорт или позволяют посмотреть текущее количество заказов по фильтрам
-                (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2 sm:justify-end">
-              <button
-                onClick={handleMoyskladCount}
-                disabled={checkingOrders || importingOrders}
-                className="rounded-lg border border-emerald-200 px-4 py-2 text-sm font-semibold text-emerald-700 hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {checkingOrders ? 'Проверяем…' : 'Проверить количество'}
-              </button>
-              <button
-                onClick={handleMoyskladImport}
-                disabled={importingOrders}
-                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {importingOrders ? 'Выгружаем заказы…' : 'Выгрузить заказы'}
-              </button>
-            </div>
-          </div>
-          <p className="mt-2 text-xs text-slate-500">Источник: https://api.moysklad.ru/api/remap/1.2/entity/purchaseorder</p>
-        </div>
 
         <section className="mt-8 grid gap-4 lg:grid-cols-3">
           <div className="rounded-2xl bg-white p-5 shadow-sm lg:col-span-2">
@@ -789,16 +964,31 @@ export default function Home() {
               <p>Текущий курс: {settings.cnyRate.toLocaleString('ru-RU')} ₽ за 1 ¥</p>
               <p>Базовая валюта: российские рубли</p>
             </div>
-            <button
-              onClick={handleMoyskladImport}
-              disabled={importingOrders}
-              className="mt-4 w-full rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {importingOrders ? 'Выгружаем заказы…' : 'Выгрузить заказы из МойСклад'}
-            </button>
-            <p className="mt-2 text-xs text-slate-500">
-              Будут подтянуты заказы поставщикам из МойСклад по указанным фильтрам (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
-            </p>
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs uppercase tracking-wide text-slate-500">МойСклад</p>
+              <p className="mt-1 text-xs text-slate-600">
+                Импорт заказов поставщикам по фильтрам (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  onClick={handleMoyskladCount}
+                  disabled={checkingOrders || importingOrders}
+                  className="rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700 hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {checkingOrders ? 'Проверяем…' : 'Проверить количество'}
+                </button>
+                <button
+                  onClick={handleMoyskladImport}
+                  disabled={importingOrders}
+                  className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {importingOrders ? 'Выгружаем…' : 'Выгрузить заказы'}
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] text-slate-500">
+                Источник: https://api.moysklad.ru/api/remap/1.2/entity/purchaseorder
+              </p>
+            </div>
             <div className="mt-4 space-y-2">
               <p className="text-xs font-semibold text-slate-700">Очистка данных</p>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -850,467 +1040,572 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="mt-8 grid gap-6 md:grid-cols-2">
-          <div className="space-y-4 rounded-2xl bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Счета</h2>
-              <span className="text-xs text-slate-500">Баланс можно редактировать</span>
-            </div>
-            <div className="space-y-3">
-              {paginatedAccounts.map((account) => (
-                <div key={account.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                  <div className="min-w-0">
-                    <p className="font-medium">{account.name}</p>
-                    <p className="text-sm text-slate-500">Создан: {formatDate(account.created_at || today)}</p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      defaultValue={account.balance}
-                      onBlur={(e) => handleAccountUpdate(account, Number(e.target.value))}
-                      className="w-28 rounded-lg border bg-slate-50 px-3 py-2 text-right text-sm"
-                    />
-                    <span className="text-slate-500">₽</span>
-                    <button
-                      onClick={() => handleAccountDelete(account)}
-                      className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                    >
-                      Удалить
-                    </button>
-                  </div>
-                </div>
-              ))}
-
-              {accounts.length > ACCOUNTS_PAGE_SIZE && (
-                <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="text-sm text-slate-600">
-                    Страница {accountsPage} из {totalAccountPages}
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => setAccountsPage((page) => Math.max(1, page - 1))}
-                      disabled={accountsPage === 1}
-                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Назад
-                    </button>
-                    {Array.from({ length: totalAccountPages }).map((_, idx) => {
-                      const page = idx + 1;
-                      return (
-                        <button
-                          key={page}
-                          onClick={() => setAccountsPage(page)}
-                          className={`rounded-lg border px-3 py-1 text-sm font-medium ${
-                            page === accountsPage
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                              : 'text-slate-700 hover:border-slate-300'
-                          }`}
-                        >
-                          {page}
-                        </button>
-                      );
-                    })}
-                    <button
-                      onClick={() => setAccountsPage((page) => Math.min(totalAccountPages, page + 1))}
-                      disabled={accountsPage === totalAccountPages}
-                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Вперёд
-                    </button>
-                  </div>
-                </div>
-              )}
-              <div className="rounded-lg border border-dashed p-3">
-                <p className="mb-2 text-sm font-semibold">Добавить счёт</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="text"
-                    placeholder="Название"
-                    value={accountForm.name}
-                    onChange={(e) => setAccountForm((prev) => ({ ...prev, name: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Баланс"
-                    value={accountForm.balance}
-                    onChange={(e) => setAccountForm((prev) => ({ ...prev, balance: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                </div>
-                <button
-                  onClick={handleAccountSubmit}
-                  className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                >
-                  Сохранить счёт
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-4 rounded-2xl bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Ожидаемые поступления</h2>
-              <span className="text-xs text-slate-500">Фиксированные и плановые</span>
-            </div>
-            <div className="space-y-3">
-              {paginatedInflows.map((item) => (
-                <div key={item.id} className="rounded-lg border p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-semibold">{item.counterparty}</p>
-                      <p className="text-xs text-slate-500">{item.kind === 'fixed' ? 'фиксированный' : 'плановый'}</p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="text-right">
-                        <p className="text-sm text-slate-500">Дата: {formatDate(item.expected_date)}</p>
-                        <p className="font-semibold">{Number(item.amount).toLocaleString('ru-RU')} ₽</p>
-                      </div>
-                      <button
-                        onClick={() => handleInflowDelete(item)}
-                        className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                      >
-                        Удалить
-                      </button>
-                    </div>
-                  </div>
-                  {item.notes && <p className="mt-1 text-sm text-slate-600">{item.notes}</p>}
-                </div>
-              ))}
-
-              {inflows.length > INFLOWS_PAGE_SIZE && (
-                <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="text-sm text-slate-600">
-                    Страница {inflowsPage} из {totalInflowPages}
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => setInflowsPage((page) => Math.max(1, page - 1))}
-                      disabled={inflowsPage === 1}
-                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Назад
-                    </button>
-                    {Array.from({ length: totalInflowPages }).map((_, idx) => {
-                      const page = idx + 1;
-                      return (
-                        <button
-                          key={page}
-                          onClick={() => setInflowsPage(page)}
-                          className={`rounded-lg border px-3 py-1 text-sm font-medium ${
-                            page === inflowsPage
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                              : 'text-slate-700 hover:border-slate-300'
-                          }`}
-                        >
-                          {page}
-                        </button>
-                      );
-                    })}
-                    <button
-                      onClick={() => setInflowsPage((page) => Math.min(totalInflowPages, page + 1))}
-                      disabled={inflowsPage === totalInflowPages}
-                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Вперёд
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              <div className="rounded-lg border border-dashed p-3">
-                <p className="mb-2 text-sm font-semibold">Добавить поступление</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <select
-                    value={inflowForm.counterpartyId}
-                    onChange={(e) =>
-                      setInflowForm((prev) => ({ ...prev, counterpartyId: e.target.value, newCounterparty: '' }))
-                    }
-                    className="col-span-2 rounded-lg border px-3 py-2"
-                  >
-                    <option value="">Выбрать контрагента</option>
-                    {counterparties.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    type="text"
-                    placeholder="Или введите нового контрагента"
-                    value={inflowForm.newCounterparty}
-                    onChange={(e) =>
-                      setInflowForm((prev) => ({ ...prev, newCounterparty: e.target.value, counterpartyId: '' }))
-                    }
-                    className="col-span-2 rounded-lg border px-3 py-2"
-                  />
-                  <input
-                    type="number"
-                    placeholder="Сумма"
-                    value={inflowForm.amount}
-                    onChange={(e) => setInflowForm((prev) => ({ ...prev, amount: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                  <input
-                    type="date"
-                    value={inflowForm.expectedDate}
-                    onChange={(e) => setInflowForm((prev) => ({ ...prev, expectedDate: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                  <select
-                    value={inflowForm.kind}
-                    onChange={(e) => setInflowForm((prev) => ({ ...prev, kind: e.target.value as 'fixed' | 'planned' }))}
-                    className="col-span-2 rounded-lg border px-3 py-2"
-                  >
-                    <option value="fixed">Фиксированный</option>
-                    <option value="planned">Плановый</option>
-                  </select>
-                  <textarea
-                    placeholder="Комментарий"
-                    value={inflowForm.notes}
-                    onChange={(e) => setInflowForm((prev) => ({ ...prev, notes: e.target.value }))}
-                    className="col-span-2 rounded-lg border px-3 py-2"
-                  />
-                </div>
-                <button
-                  onClick={handleInflowSubmit}
-                  className="mt-3 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
-                >
-                  Сохранить поступление
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <section className="mt-8 grid gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2 space-y-4 rounded-2xl bg-white p-5 shadow-sm">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Заказы поставщикам</h2>
-              <span className="text-xs text-slate-500">Аванс и остаток с контролем кассовых разрывов</span>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Общая сумма заказов</p>
-                <p className="text-2xl font-semibold text-slate-900">
-                  {orderTotals.total.toLocaleString('ru-RU')} ₽
+          <div className="lg:col-span-2 rounded-2xl bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">Управление сущностями</h2>
+                <p className="text-sm text-slate-600">
+                  Счета, ожидаемые поступления и заказы поставщикам — единый интерфейс с вкладками.
                 </p>
               </div>
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                <p className="text-xs uppercase tracking-wide text-emerald-700">Сумма авансов</p>
-                <p className="text-2xl font-semibold text-emerald-700">
-                  {orderTotals.deposits.toLocaleString('ru-RU')} ₽
-                </p>
-              </div>
+              <span className="text-xs text-slate-500">Редактирование доступно внутри вкладок</span>
             </div>
-            <div className="rounded-lg border border-dashed p-4">
-              <p className="mb-2 text-sm font-semibold">
-                {editingOrderId ? 'Редактировать заказ' : 'Добавить заказ'}
-              </p>
-              <div className="grid grid-cols-2 gap-3">
-                <input
-                  type="text"
-                  placeholder="Название / номер заказа"
-                  value={orderForm.title}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, title: e.target.value }))}
-                  className="col-span-2 rounded-lg border px-3 py-2"
-                />
-                <select
-                  value={orderForm.supplierId}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, supplierId: e.target.value }))}
-                  className="rounded-lg border px-3 py-2"
-                >
-                  <option value="">Выбрать поставщика</option>
-                  {suppliers.map((supplier) => (
-                    <option key={supplier.id} value={supplier.id}>
-                      {supplier.name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="text"
-                  placeholder="Или введите нового поставщика"
-                  value={orderForm.newSupplier}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, newSupplier: e.target.value }))}
-                  className="rounded-lg border px-3 py-2"
-                />
-                <div className="grid grid-cols-[1fr_auto] gap-2">
-                  <input
-                    type="number"
-                    placeholder="Сумма заказа"
-                    value={orderForm.totalAmount}
-                    onChange={(e) => setOrderForm((prev) => ({ ...prev, totalAmount: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                  <select
-                    value={orderForm.currency}
-                    onChange={(e) => setOrderForm((prev) => ({ ...prev, currency: e.target.value as Currency }))}
-                    className="rounded-lg border px-3 py-2 text-sm"
-                  >
-                    <option value="RUB">₽ Рубли</option>
-                    <option value="CNY">¥ Юани</option>
-                  </select>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-semibold text-slate-600">Аванс поставщику</label>
-                  <input
-                    type="number"
-                    placeholder="Аванс поставщику"
-                    value={orderForm.depositAmount}
-                    onChange={(e) => setOrderForm((prev) => ({ ...prev, depositAmount: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-semibold text-slate-600">Дата аванса</label>
-                  <input
-                    type="date"
-                    value={orderForm.depositDate}
-                    onChange={(e) => setOrderForm((prev) => ({ ...prev, depositDate: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                </div>
-                <div className="flex flex-col gap-1">
-                  <label className="text-xs font-semibold text-slate-600">Срок оплаты</label>
-                  <input
-                    type="date"
-                    value={orderForm.dueDate}
-                    onChange={(e) => setOrderForm((prev) => ({ ...prev, dueDate: e.target.value }))}
-                    className="rounded-lg border px-3 py-2"
-                  />
-                </div>
-                <textarea
-                  placeholder="Комментарий"
-                  value={orderForm.description}
-                  onChange={(e) => setOrderForm((prev) => ({ ...prev, description: e.target.value }))}
-                  className="col-span-2 rounded-lg border px-3 py-2"
-                />
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  onClick={handleOrderCheck}
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                >
-                  Проверить заказ
-                </button>
-                <button
-                  onClick={handleOrderSubmit}
-                  className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
-                >
-                  {editingOrderId ? 'Сохранить изменения' : 'Сохранить заказ'}
-                </button>
-                {editingOrderId && (
-                  <button
-                    onClick={resetOrderForm}
-                    className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                  >
-                    Отменить редактирование
-                  </button>
-                )}
-              </div>
-              {checkResult && (
-                <div
-                  className={`mt-3 rounded-lg border px-3 py-2 text-sm ${
-                    checkResult.ok ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-rose-200 bg-rose-50 text-rose-800'
-                  }`}
-                >
-                  {checkResult.ok
-                    ? 'Можно оформлять: кассовый разрыв не возникает'
-                    : `Кассовый разрыв составит ${checkResult.cashGap.toLocaleString('ru-RU')} ₽`}
+            <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Сущности">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'orders'}
+                className={tabButtonClass('orders')}
+                onClick={() => setActiveTab('orders')}
+              >
+                Заказы поставщикам
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'accounts'}
+                className={tabButtonClass('accounts')}
+                onClick={() => setActiveTab('accounts')}
+              >
+                Счета
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'inflows'}
+                className={tabButtonClass('inflows')}
+                onClick={() => setActiveTab('inflows')}
+              >
+                Ожидаемые поступления
+              </button>
+            </div>
+
+            <div className="mt-4">
+              {activeTab === 'orders' && (
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                  <div className="space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs uppercase tracking-wide text-slate-500">Общая сумма заказов</p>
+                        <p className="text-2xl font-semibold text-slate-900">
+                          {orderTotals.total.toLocaleString('ru-RU')} ₽
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                        <p className="text-xs uppercase tracking-wide text-emerald-700">Авансы к оплате</p>
+                        <p className="text-2xl font-semibold text-emerald-700">
+                          {orderTotals.depositsPlanned.toLocaleString('ru-RU')} ₽
+                        </p>
+                        <p className="text-xs text-emerald-700">
+                          Оплачено: {orderTotals.depositsPaid.toLocaleString('ru-RU')} ₽
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      {paginatedOrders.map((order) => (
+                        <div key={order.id} className="rounded-lg border p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="font-semibold">{order.title}</p>
+                              {order.supplier_name && (
+                                <p className="text-sm text-slate-500">{order.supplier_name}</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <div className="text-right">
+                                <p className="text-xs text-slate-500">Срок оплаты: {formatDate(order.due_date)}</p>
+                                <p className="font-semibold">
+                                  {formatCurrency(Number(order.total_amount), order.currency ?? 'RUB')}
+                                </p>
+                                {order.currency === 'CNY' && (
+                                  <p className="text-xs text-slate-500">
+                                    ≈ {formatRubEquivalent(Number(order.total_amount), order.currency, settings)} ₽
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => startOrderEdit(order)}
+                                  className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                  Редактировать
+                                </button>
+                                <button
+                                  onClick={() => handleOrderDelete(order)}
+                                  className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                                >
+                                  Удалить
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-600 sm:grid-cols-4">
+                            <p className="flex flex-wrap items-center gap-2">
+                              <span>
+                                Аванс: {formatCurrency(Number(order.deposit_amount), order.currency ?? 'RUB')}
+                                {order.currency === 'CNY' && (
+                                  <span className="text-xs text-slate-500">
+                                    {' '}
+                                    · ≈ {formatRubEquivalent(Number(order.deposit_amount), order.currency, settings)} ₽
+                                  </span>
+                                )}
+                              </span>
+                              {Number(order.deposit_amount) > 0 && (
+                                <span
+                                  className={`text-xs font-semibold ${
+                                    order.deposit_paid ? 'text-emerald-600' : 'text-amber-600'
+                                  }`}
+                                >
+                                  {order.deposit_paid ? 'оплачен' : 'ожидается'}
+                                </span>
+                              )}
+                            </p>
+                            <p>Дата аванса: {formatDate(order.deposit_date)}</p>
+                            <p>
+                              Остаток:{' '}
+                              {formatCurrency(
+                                Number(order.total_amount) - Number(order.deposit_amount),
+                                order.currency ?? 'RUB',
+                              )}
+                              {order.currency === 'CNY' && (
+                                <span className="text-xs text-slate-500">
+                                  {' '}
+                                  · ≈{' '}
+                                  {formatRubEquivalent(
+                                    Number(order.total_amount) - Number(order.deposit_amount),
+                                    order.currency,
+                                    settings,
+                                  )}{' '}
+                                  ₽
+                                </span>
+                              )}
+                            </p>
+                            <p>Комментарий: {order.description || '—'}</p>
+                          </div>
+                        </div>
+                      ))}
+
+                      {orders.length > ORDERS_PAGE_SIZE && (
+                        <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="text-sm text-slate-600">
+                            Страница {ordersPage} из {totalOrderPages}
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => setOrdersPage((page) => Math.max(1, page - 1))}
+                              disabled={ordersPage === 1}
+                              className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Назад
+                            </button>
+                            {Array.from({ length: totalOrderPages }).map((_, idx) => {
+                              const page = idx + 1;
+                              return (
+                                <button
+                                  key={page}
+                                  onClick={() => setOrdersPage(page)}
+                                  className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                                    page === ordersPage
+                                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                      : 'text-slate-700 hover:border-slate-300'
+                                  }`}
+                                >
+                                  {page}
+                                </button>
+                              );
+                            })}
+                            <button
+                              onClick={() => setOrdersPage((page) => Math.min(totalOrderPages, page + 1))}
+                              disabled={ordersPage === totalOrderPages}
+                              className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Вперёд
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="space-y-3 rounded-xl border border-dashed p-4">
+                    <p className="text-sm font-semibold">
+                      {editingOrderId ? 'Редактировать заказ' : 'Добавить заказ'}
+                    </p>
+                    {editingOrderStale && (
+                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                        Заказ обновлён другим пользователем. Обновите данные перед сохранением.
+                      </div>
+                    )}
+                    <div className="grid grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Название / номер заказа"
+                        value={orderForm.title}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, title: e.target.value }))}
+                        className={`col-span-2 ${inputClassName}`}
+                      />
+                      <select
+                        value={orderForm.supplierId}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, supplierId: e.target.value }))}
+                        className={inputClassName}
+                      >
+                        <option value="">Выбрать поставщика</option>
+                        {suppliers.map((supplier) => (
+                          <option key={supplier.id} value={supplier.id}>
+                            {supplier.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        placeholder="Или введите нового поставщика"
+                        value={orderForm.newSupplier}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, newSupplier: e.target.value }))}
+                        className={inputClassName}
+                      />
+                      <div className="col-span-2 grid grid-cols-[1fr_auto] gap-2">
+                        <input
+                          type="number"
+                          placeholder="Сумма заказа"
+                          value={orderForm.totalAmount}
+                          onChange={(e) => setOrderForm((prev) => ({ ...prev, totalAmount: e.target.value }))}
+                          className={inputClassName}
+                        />
+                        <select
+                          value={orderForm.currency}
+                          onChange={(e) => setOrderForm((prev) => ({ ...prev, currency: e.target.value as Currency }))}
+                          className={inputClassName}
+                        >
+                          <option value="RUB">₽ Рубли</option>
+                          <option value="CNY">¥ Юани</option>
+                        </select>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-semibold text-slate-600">Аванс поставщику</label>
+                        <input
+                          type="number"
+                          placeholder="Аванс поставщику"
+                          value={orderForm.depositAmount}
+                          onChange={(e) => setOrderForm((prev) => ({ ...prev, depositAmount: e.target.value }))}
+                          className={inputClassName}
+                        />
+                      </div>
+                      <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={orderForm.depositPaid}
+                          onChange={(e) => setOrderForm((prev) => ({ ...prev, depositPaid: e.target.checked }))}
+                          className="h-4 w-4 accent-emerald-600"
+                        />
+                        Аванс уже оплачен
+                      </label>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-semibold text-slate-600">Дата аванса</label>
+                        <input
+                          type="date"
+                          value={orderForm.depositDate}
+                          onChange={(e) => setOrderForm((prev) => ({ ...prev, depositDate: e.target.value }))}
+                          className={inputClassName}
+                        />
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-semibold text-slate-600">Срок оплаты</label>
+                        <input
+                          type="date"
+                          value={orderForm.dueDate}
+                          onChange={(e) => setOrderForm((prev) => ({ ...prev, dueDate: e.target.value }))}
+                          className={inputClassName}
+                        />
+                      </div>
+                      <textarea
+                        placeholder="Комментарий"
+                        value={orderForm.description}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, description: e.target.value }))}
+                        className={`col-span-2 ${textareaClassName}`}
+                      />
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={handleOrderCheck}
+                        className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        Проверить заказ
+                      </button>
+                      <button
+                        onClick={handleOrderSubmit}
+                        disabled={editingOrderStale}
+                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {editingOrderId ? 'Сохранить изменения' : 'Сохранить заказ'}
+                      </button>
+                      {editingOrderId && (
+                        <button
+                          onClick={resetOrderForm}
+                          className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                        >
+                          Отменить редактирование
+                        </button>
+                      )}
+                    </div>
+                    {checkResult && (
+                      <div
+                        className={`mt-3 rounded-lg border px-3 py-2 text-sm ${
+                          checkResult.ok
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                            : 'border-rose-200 bg-rose-50 text-rose-800'
+                        }`}
+                      >
+                        {checkResult.ok
+                          ? 'Можно оформлять: кассовый разрыв не возникает'
+                          : `Кассовый разрыв составит ${checkResult.cashGap.toLocaleString('ru-RU')} ₽`}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
-            </div>
 
-            <div className="space-y-3">
-              {paginatedOrders.map((order) => (
-                <div key={order.id} className="rounded-lg border p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="font-semibold">{order.title}</p>
-                      {order.supplier_name && <p className="text-sm text-slate-500">{order.supplier_name}</p>}
+              {activeTab === 'accounts' && (
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold">Счета</p>
+                      <span className="text-xs text-slate-500">Баланс можно редактировать</span>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <div className="text-right">
-                        <p className="text-xs text-slate-500">Срок оплаты: {formatDate(order.due_date)}</p>
-                        <p className="font-semibold">
-                          {formatCurrency(Number(order.total_amount), order.currency ?? 'RUB')}
-                        </p>
-                        {order.currency === 'CNY' && (
+                    {paginatedAccounts.map((account) => (
+                      <div
+                        key={`${account.id}-${account.updated_at ?? ''}`}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-medium">{account.name}</p>
                           <p className="text-xs text-slate-500">
-                            ≈ {formatRubEquivalent(Number(order.total_amount), order.currency, settings)} ₽
+                            Создан: {formatDate(account.created_at || today)}
                           </p>
-                        )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            defaultValue={account.balance}
+                            onBlur={(e) => handleAccountUpdate(account, Number(e.target.value))}
+                            className={`${inputMutedClassName} w-28 text-right`}
+                          />
+                          <span className="text-slate-500">₽</span>
+                          <button
+                            onClick={() => handleAccountDelete(account)}
+                            className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                          >
+                            Удалить
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => startOrderEdit(order)}
-                          className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                        >
-                          Редактировать
-                        </button>
-                        <button
-                          onClick={() => handleOrderDelete(order)}
-                          className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                        >
-                          Удалить
-                        </button>
+                    ))}
+
+                    {accounts.length > ACCOUNTS_PAGE_SIZE && (
+                      <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="text-sm text-slate-600">
+                          Страница {accountsPage} из {totalAccountPages}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => setAccountsPage((page) => Math.max(1, page - 1))}
+                            disabled={accountsPage === 1}
+                            className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Назад
+                          </button>
+                          {Array.from({ length: totalAccountPages }).map((_, idx) => {
+                            const page = idx + 1;
+                            return (
+                              <button
+                                key={page}
+                                onClick={() => setAccountsPage(page)}
+                                className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                                  page === accountsPage
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'text-slate-700 hover:border-slate-300'
+                                }`}
+                              >
+                                {page}
+                              </button>
+                            );
+                          })}
+                          <button
+                            onClick={() => setAccountsPage((page) => Math.min(totalAccountPages, page + 1))}
+                            disabled={accountsPage === totalAccountPages}
+                            className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Вперёд
+                          </button>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
-                  <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-600 sm:grid-cols-4">
-                    <p>
-                      Аванс: {formatCurrency(Number(order.deposit_amount), order.currency ?? 'RUB')}
-                      {order.currency === 'CNY' && (
-                        <span className="text-xs text-slate-500"> · ≈ {formatRubEquivalent(Number(order.deposit_amount), order.currency, settings)} ₽</span>
-                      )}
-                    </p>
-                    <p>Дата аванса: {formatDate(order.deposit_date)}</p>
-                    <p>
-                      Остаток: {formatCurrency(Number(order.total_amount) - Number(order.deposit_amount), order.currency ?? 'RUB')}
-                      {order.currency === 'CNY' && (
-                        <span className="text-xs text-slate-500"> · ≈ {formatRubEquivalent(Number(order.total_amount) - Number(order.deposit_amount), order.currency, settings)} ₽</span>
-                      )}
-                    </p>
-                    <p>Комментарий: {order.description || '—'}</p>
+
+                  <div className="space-y-3 rounded-xl border border-dashed p-4">
+                    <p className="text-sm font-semibold">Добавить счёт</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Название"
+                        value={accountForm.name}
+                        onChange={(e) => setAccountForm((prev) => ({ ...prev, name: e.target.value }))}
+                        className={inputClassName}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Баланс"
+                        value={accountForm.balance}
+                        onChange={(e) => setAccountForm((prev) => ({ ...prev, balance: e.target.value }))}
+                        className={inputClassName}
+                      />
+                    </div>
+                    <button
+                      onClick={handleAccountSubmit}
+                      className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                    >
+                      Сохранить счёт
+                    </button>
                   </div>
                 </div>
-              ))}
+              )}
 
-              {orders.length > ORDERS_PAGE_SIZE && (
-                <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="text-sm text-slate-600">
-                    Страница {ordersPage} из {totalOrderPages}
+              {activeTab === 'inflows' && (
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold">Ожидаемые поступления</p>
+                      <span className="text-xs text-slate-500">Фиксированные и плановые</span>
+                    </div>
+                    {paginatedInflows.map((item) => (
+                      <div key={item.id} className="rounded-lg border p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="font-semibold">{item.counterparty}</p>
+                            <p className="text-xs text-slate-500">
+                              {item.kind === 'fixed' ? 'фиксированный' : 'плановый'}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="text-right">
+                              <p className="text-xs text-slate-500">Дата: {formatDate(item.expected_date)}</p>
+                              <p className="font-semibold">{Number(item.amount).toLocaleString('ru-RU')} ₽</p>
+                            </div>
+                            <button
+                              onClick={() => handleInflowDelete(item)}
+                              className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                            >
+                              Удалить
+                            </button>
+                          </div>
+                        </div>
+                        {item.notes && <p className="mt-1 text-sm text-slate-600">{item.notes}</p>}
+                      </div>
+                    ))}
+
+                    {inflows.length > INFLOWS_PAGE_SIZE && (
+                      <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="text-sm text-slate-600">
+                          Страница {inflowsPage} из {totalInflowPages}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => setInflowsPage((page) => Math.max(1, page - 1))}
+                            disabled={inflowsPage === 1}
+                            className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Назад
+                          </button>
+                          {Array.from({ length: totalInflowPages }).map((_, idx) => {
+                            const page = idx + 1;
+                            return (
+                              <button
+                                key={page}
+                                onClick={() => setInflowsPage(page)}
+                                className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                                  page === inflowsPage
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'text-slate-700 hover:border-slate-300'
+                                }`}
+                              >
+                                {page}
+                              </button>
+                            );
+                          })}
+                          <button
+                            onClick={() => setInflowsPage((page) => Math.min(totalInflowPages, page + 1))}
+                            disabled={inflowsPage === totalInflowPages}
+                            className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Вперёд
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex flex-wrap gap-2">
+
+                  <div className="space-y-3 rounded-xl border border-dashed p-4">
+                    <p className="text-sm font-semibold">Добавить поступление</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <select
+                        value={inflowForm.counterpartyId}
+                        onChange={(e) =>
+                          setInflowForm((prev) => ({ ...prev, counterpartyId: e.target.value, newCounterparty: '' }))
+                        }
+                        className={`col-span-2 ${inputClassName}`}
+                      >
+                        <option value="">Выбрать контрагента</option>
+                        {counterparties.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        placeholder="Или введите нового контрагента"
+                        value={inflowForm.newCounterparty}
+                        onChange={(e) =>
+                          setInflowForm((prev) => ({ ...prev, newCounterparty: e.target.value, counterpartyId: '' }))
+                        }
+                        className={`col-span-2 ${inputClassName}`}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Сумма"
+                        value={inflowForm.amount}
+                        onChange={(e) => setInflowForm((prev) => ({ ...prev, amount: e.target.value }))}
+                        className={inputClassName}
+                      />
+                      <input
+                        type="date"
+                        value={inflowForm.expectedDate}
+                        onChange={(e) => setInflowForm((prev) => ({ ...prev, expectedDate: e.target.value }))}
+                        className={inputClassName}
+                      />
+                      <select
+                        value={inflowForm.kind}
+                        onChange={(e) =>
+                          setInflowForm((prev) => ({ ...prev, kind: e.target.value as 'fixed' | 'planned' }))
+                        }
+                        className={`col-span-2 ${inputClassName}`}
+                      >
+                        <option value="fixed">Фиксированный</option>
+                        <option value="planned">Плановый</option>
+                      </select>
+                      <textarea
+                        placeholder="Комментарий"
+                        value={inflowForm.notes}
+                        onChange={(e) => setInflowForm((prev) => ({ ...prev, notes: e.target.value }))}
+                        className={`col-span-2 ${textareaClassName}`}
+                      />
+                    </div>
                     <button
-                      onClick={() => setOrdersPage((page) => Math.max(1, page - 1))}
-                      disabled={ordersPage === 1}
-                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={handleInflowSubmit}
+                      className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
                     >
-                      Назад
-                    </button>
-                    {Array.from({ length: totalOrderPages }).map((_, idx) => {
-                      const page = idx + 1;
-                      return (
-                        <button
-                          key={page}
-                          onClick={() => setOrdersPage(page)}
-                          className={`rounded-lg border px-3 py-1 text-sm font-medium ${
-                            page === ordersPage
-                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                              : 'text-slate-700 hover:border-slate-300'
-                          }`}
-                        >
-                          {page}
-                        </button>
-                      );
-                    })}
-                    <button
-                      onClick={() => setOrdersPage((page) => Math.min(totalOrderPages, page + 1))}
-                      disabled={ordersPage === totalOrderPages}
-                      className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Вперёд
+                      Сохранить поступление
                     </button>
                   </div>
                 </div>
@@ -1327,7 +1622,7 @@ export default function Home() {
                   type="date"
                   value={calculatorDate}
                   onChange={(e) => setCalculatorDate(e.target.value)}
-                  className="flex-1 rounded-lg border px-3 py-2"
+                  className={inputClassName}
                 />
               </div>
               {availableOnDate !== null && (
@@ -1393,57 +1688,168 @@ export default function Home() {
             <span className="text-xs text-slate-500">Операции за день и итоговый баланс</span>
           </div>
           <div className="mt-4 rounded-xl border bg-slate-50 p-4">
-            <div className="flex items-center justify-between text-sm text-slate-600">
-              <span>Динамика баланса по дням</span>
-              {plan && <span>Диапазон: {chartBounds.min.toLocaleString('ru-RU')} ₽ — {chartBounds.max.toLocaleString('ru-RU')} ₽</span>}
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Динамика баланса по дням</p>
+                <p className="text-xs text-slate-500">Диапазон дат: {chartRangeLabel}</p>
+                {chartData.length > 0 && (
+                  <p className="text-xs text-slate-500">
+                    Баланс: {chartBounds.min.toLocaleString('ru-RU')} ₽ — {chartBounds.max.toLocaleString('ru-RU')} ₽
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-col gap-2 text-xs text-slate-600 sm:flex-row sm:items-center sm:gap-4">
+                <label className="flex items-center gap-2">
+                  Масштаб
+                  <input
+                    type="range"
+                    min={chartWindowMin}
+                    max={chartWindowMax}
+                    value={chartWindowSizeValue}
+                    onChange={(e) => setChartWindowSize(Number(e.target.value))}
+                    disabled={!chartData.length}
+                    className="w-32"
+                  />
+                  <span className="w-10 text-right">{chartWindowSizeValue} дн.</span>
+                </label>
+                <label className="flex items-center gap-2">
+                  Сдвиг
+                  <input
+                    type="range"
+                    min="0"
+                    max={maxChartStart}
+                    value={chartWindowStart}
+                    onChange={(e) => setChartWindowStart(Number(e.target.value))}
+                    disabled={!chartData.length || maxChartStart === 0}
+                    className="w-32"
+                  />
+                </label>
+              </div>
             </div>
             <div className="mt-3 overflow-hidden rounded-lg bg-white">
               {chartData.length ? (
-                <svg viewBox="0 0 800 240" className="h-56 w-full">
+                <svg
+                  viewBox={`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`}
+                  className="h-64 w-full"
+                  onMouseMove={handleChartMove}
+                  onMouseLeave={() => setHoveredChartIndex(null)}
+                >
                   <defs>
                     <linearGradient id="balanceGradient" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="0%" stopColor="#34d399" stopOpacity="0.3" />
                       <stop offset="100%" stopColor="#34d399" stopOpacity="0" />
                     </linearGradient>
                   </defs>
-                  <rect x="0" y="0" width="800" height="240" fill="#f8fafc" />
-                  <polyline
-                    points={`30,${240 - 30} 770,${240 - 30}`}
-                    fill="none"
+                  <rect x="0" y="0" width={CHART_WIDTH} height={CHART_HEIGHT} fill="#ffffff" />
+                  {chartMetrics.yTicks.map((tick, idx) => (
+                    <g key={`y-${idx}`}>
+                      <line
+                        x1={CHART_MARGIN.left}
+                        y1={tick.y}
+                        x2={CHART_WIDTH - CHART_MARGIN.right}
+                        y2={tick.y}
+                        stroke="#e2e8f0"
+                        strokeDasharray="4 4"
+                      />
+                      <text
+                        x={CHART_MARGIN.left - 8}
+                        y={tick.y + 4}
+                        textAnchor="end"
+                        fontSize="11"
+                        fill="#64748b"
+                      >
+                        {tick.label}
+                      </text>
+                    </g>
+                  ))}
+                  <line
+                    x1={CHART_MARGIN.left}
+                    y1={CHART_HEIGHT - CHART_MARGIN.bottom}
+                    x2={CHART_WIDTH - CHART_MARGIN.right}
+                    y2={CHART_HEIGHT - CHART_MARGIN.bottom}
                     stroke="#e2e8f0"
-                    strokeWidth="1"
-                    strokeDasharray="4 4"
                   />
-                  {chartPoints.points.length > 0 && (
+                  {chartMetrics.xTicks.map((tick, idx) => (
+                    <text
+                      key={`x-${idx}`}
+                      x={tick.x}
+                      y={CHART_HEIGHT - CHART_MARGIN.bottom + 18}
+                      textAnchor="middle"
+                      fontSize="11"
+                      fill="#64748b"
+                    >
+                      {tick.label}
+                    </text>
+                  ))}
+                  {chartMetrics.area && (
+                    <polyline points={chartMetrics.area} fill="url(#balanceGradient)" stroke="none" />
+                  )}
+                  <polyline
+                    points={chartMetrics.polyline}
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="3"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  />
+                  {chartMetrics.points
+                    .filter((point) => point.day.balance < 0)
+                    .map((point) => (
+                      <circle
+                        key={point.day.date}
+                        cx={point.x}
+                        cy={point.y}
+                        r="4"
+                        fill="#fecdd3"
+                        stroke="#fb7185"
+                        strokeWidth="2"
+                      />
+                    ))}
+                  {hoveredPoint && (
                     <>
-                      <polyline
-                        points={`30,210 ${chartPoints.polyline} 770,210`}
-                        fill="url(#balanceGradient)"
-                        stroke="none"
+                      <line
+                        x1={hoveredPoint.x}
+                        y1={CHART_MARGIN.top}
+                        x2={hoveredPoint.x}
+                        y2={CHART_HEIGHT - CHART_MARGIN.bottom}
+                        stroke="#94a3b8"
+                        strokeDasharray="4 4"
                       />
-                      <polyline
-                        points={chartPoints.polyline}
-                        fill="none"
-                        stroke="#10b981"
-                        strokeWidth="3"
-                        strokeLinejoin="round"
-                        strokeLinecap="round"
+                      <circle
+                        cx={hoveredPoint.x}
+                        cy={hoveredPoint.y}
+                        r="5"
+                        fill="#10b981"
+                        stroke="#ffffff"
+                        strokeWidth="2"
                       />
-                      {chartPoints.points
-                        .filter((point) => point.day.balance < 0)
-                        .map((point) => (
-                          <g key={point.day.date}>
-                            <circle cx={point.x} cy={point.y} r="6" fill="#fecdd3" stroke="#fb7185" strokeWidth="2" />
-                            <title>
-                              {`${formatDate(point.day.date)}: минус ${Math.abs(point.day.balance).toLocaleString('ru-RU')} ₽`}
-                            </title>
-                          </g>
-                        ))}
+                      <g>
+                        <rect
+                          x={tooltipX}
+                          y={tooltipY}
+                          width={tooltipWidth}
+                          height={tooltipHeight}
+                          rx="8"
+                          fill="#ffffff"
+                          stroke="#e2e8f0"
+                        />
+                        <text x={tooltipX + 10} y={tooltipY + 18} fontSize="12" fill="#0f172a" fontWeight="600">
+                          {formatDate(hoveredPoint.day.date)}
+                        </text>
+                        <text
+                          x={tooltipX + 10}
+                          y={tooltipY + 34}
+                          fontSize="12"
+                          fill={hoveredPoint.day.balance >= 0 ? '#059669' : '#e11d48'}
+                        >
+                          {hoveredPoint.day.balance.toLocaleString('ru-RU')} ₽
+                        </text>
+                      </g>
                     </>
                   )}
                 </svg>
               ) : (
-                <p className="text-sm text-slate-500">Нет данных для графика</p>
+                <p className="p-4 text-sm text-slate-500">Нет данных для графика</p>
               )}
             </div>
           </div>

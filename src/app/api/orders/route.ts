@@ -31,6 +31,7 @@ export async function POST(request: Request) {
     title,
     total_amount,
     deposit_amount,
+    deposit_paid,
     deposit_date,
     due_date,
     currency,
@@ -49,10 +50,12 @@ export async function POST(request: Request) {
         title,
         total_amount: Number(total_amount),
         deposit_amount: Number(deposit_amount) || 0,
+        deposit_paid: Boolean(deposit_paid),
         deposit_date: deposit_date || new Date().toISOString().slice(0, 10),
         due_date,
         description,
         currency: currency === 'CNY' ? 'CNY' : 'RUB',
+        updated_at: new Date().toISOString(),
       },
     ])
     .select('*, suppliers(name)')
@@ -79,10 +82,12 @@ export async function PUT(request: Request) {
     title,
     total_amount,
     deposit_amount,
+    deposit_paid,
     deposit_date,
     due_date,
     currency,
     description,
+    updated_at,
   } = body;
 
   if (!id) {
@@ -93,6 +98,10 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: 'Не хватает данных заказа' }, { status: 400 });
   }
 
+  if (!updated_at) {
+    return NextResponse.json({ error: 'Не указано время последнего обновления' }, { status: 400 });
+  }
+
   const { data, error } = await supabase
     .from('supplier_orders')
     .update({
@@ -100,17 +109,24 @@ export async function PUT(request: Request) {
       title,
       total_amount: Number(total_amount),
       deposit_amount: Number(deposit_amount) || 0,
+      deposit_paid: Boolean(deposit_paid),
       deposit_date: deposit_date || new Date().toISOString().slice(0, 10),
       due_date,
       description,
       currency: currency === 'CNY' ? 'CNY' : 'RUB',
+      updated_at: new Date().toISOString(),
     })
     .eq('id', id)
+    .eq('updated_at', updated_at)
     .select('*, suppliers(name)')
-    .single();
+    .maybeSingle();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (!data) {
+    return NextResponse.json({ error: 'Заказ уже обновлён другим пользователем. Обновите данные и повторите.' }, { status: 409 });
   }
 
   const normalizedRow = data as SupplierOrder & { suppliers?: { name?: string | null } | null };

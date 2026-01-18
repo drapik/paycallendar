@@ -3,18 +3,21 @@ export interface Account {
   name: string;
   balance: number;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface Supplier {
   id: string;
   name: string;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface Counterparty {
   id: string;
   name: string;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface SupplierOrder {
@@ -25,11 +28,13 @@ export interface SupplierOrder {
   title: string;
   total_amount: number;
   deposit_amount: number;
+  deposit_paid?: boolean | null;
   deposit_date: string;
   due_date: string;
   currency: Currency;
   description?: string | null;
   created_at?: string;
+  updated_at?: string;
 }
 
 export type IncomingKind = 'fixed' | 'planned';
@@ -43,6 +48,7 @@ export interface IncomingPayment {
   kind: IncomingKind;
   notes?: string | null;
   created_at?: string;
+  updated_at?: string;
 }
 
 export type CashEventType = 'opening' | 'inflow' | 'outflow';

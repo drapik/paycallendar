@@ -270,6 +270,7 @@ export async function POST() {
       title: string;
       total_amount: number;
       deposit_amount: number;
+      deposit_paid: boolean;
       deposit_date: string;
       due_date: string;
       currency: Currency;
@@ -290,6 +291,7 @@ export async function POST() {
       const depositAmount = shouldConvertToRub
         ? convertToRub(depositAmountBase, rate)
         : depositAmountBase;
+      const depositPaid = depositAmount > 0;
       const storedCurrency: Currency = shouldConvertToRub ? 'RUB' : currency;
       const orderDate = order.moment ? new Date(order.moment) : new Date();
       const finalPaymentDate = addMonths(orderDate, 1);
@@ -299,6 +301,7 @@ export async function POST() {
         title: order.name || 'Заказ поставщику',
         total_amount: totalAmount,
         deposit_amount: depositAmount,
+        deposit_paid: depositPaid,
         deposit_date: toDateOnly(order.moment),
         due_date: toDateOnly(finalPaymentDate),
         currency: storedCurrency,

@@ -33,7 +33,9 @@ export async function POST(request: Request) {
     due_date: candidate.due_date || new Date().toISOString().slice(0, 10),
     description: candidate.description ?? null,
     created_at: candidate.created_at,
+    updated_at: candidate.updated_at,
     deposit_amount: Number(candidate.deposit_amount) || 0,
+    deposit_paid: Boolean(candidate.deposit_paid),
     total_amount: Number(candidate.total_amount) || 0,
     currency: candidate.currency === 'CNY' ? 'CNY' : 'RUB',
   };

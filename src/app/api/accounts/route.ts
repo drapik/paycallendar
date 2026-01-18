@@ -36,21 +36,30 @@ export async function POST(request: Request) {
 
 export async function PATCH(request: Request) {
   const body = await request.json();
-  const { id, name, balance } = body;
+  const { id, name, balance, updated_at } = body;
 
   if (!id) {
     return NextResponse.json({ error: 'Не указан id счёта' }, { status: 400 });
   }
 
+  if (!updated_at) {
+    return NextResponse.json({ error: 'Не указано время последнего обновления' }, { status: 400 });
+  }
+
   const { data, error } = await supabase
     .from('accounts')
-    .update({ name, balance: Number(balance) })
+    .update({ name, balance: Number(balance), updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('updated_at', updated_at)
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  if (!data) {
+    return NextResponse.json({ error: 'Счёт уже изменён другим пользователем. Обновите данные и повторите.' }, { status: 409 });
   }
 
   return NextResponse.json({ data });
