@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
-import { format, parseISO } from 'date-fns';
+import { addMonths, format, parseISO } from 'date-fns';
 import {
   Account,
   AppSettings,
@@ -46,6 +46,26 @@ interface InflowFormState {
   notes: string;
 }
 
+interface OzonAccountFormState {
+  name: string;
+  clientId: string;
+  apiKey: string;
+  plannedPercent: string;
+}
+
+interface OzonAccount extends OzonAccountFormState {
+  id: string;
+}
+
+interface OzonPayoutItem {
+  period: {
+    begin: string;
+    end: string;
+  };
+  amount: number;
+  payout_date: string;
+}
+
 interface ExpenseFormState {
   title: string;
   totalAmount: string;
@@ -74,6 +94,7 @@ type ExpenseRow = Omit<PlannedExpense, 'amount' | 'amount_primary' | 'amount_sec
   amount_secondary?: number | string | null;
 };
 type CleanupTarget = 'all' | 'accounts' | 'suppliers' | 'counterparties' | 'orders' | 'inflows' | 'expenses';
+type OzonImportMode = 'fixed' | 'planned';
 interface DataResponse {
   accounts: AccountRow[];
   suppliers: Supplier[];
@@ -90,6 +111,13 @@ interface SettingsFormState {
 }
 
 const today = new Date().toISOString().slice(0, 10);
+const OZON_STORAGE_KEY = 'paycallendar.ozonAccounts';
+const OZON_FORM_DEFAULT: OzonAccountFormState = {
+  name: '',
+  clientId: '',
+  apiKey: '',
+  plannedPercent: '',
+};
 const ORDERS_PAGE_SIZE = 5;
 const ACCOUNTS_PAGE_SIZE = 5;
 const INFLOWS_PAGE_SIZE = 5;
@@ -157,6 +185,49 @@ async function parseJsonSafe<T extends ParsedJson = ParsedJson>(response: Respon
   } as T;
 }
 
+function formatPeriodLabel(begin: string, end: string) {
+  return `${formatDate(begin)} – ${formatDate(end)}`;
+}
+
+function createLocalId(prefix = 'item') {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function parsePercentInput(value: string) {
+  if (!value.trim()) return 0;
+  const normalized = value.replace(',', '.');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeOzonAccount(raw: Partial<OzonAccount>): OzonAccount {
+  const plannedPercent =
+    typeof raw.plannedPercent === 'string'
+      ? raw.plannedPercent
+      : raw.plannedPercent === null || raw.plannedPercent === undefined
+        ? ''
+        : String(raw.plannedPercent);
+
+  return {
+    id: typeof raw.id === 'string' && raw.id.trim() ? raw.id : createLocalId('ozon'),
+    name: typeof raw.name === 'string' ? raw.name : '',
+    clientId: typeof raw.clientId === 'string' ? raw.clientId : '',
+    apiKey: typeof raw.apiKey === 'string' ? raw.apiKey : '',
+    plannedPercent,
+  };
+}
+
 function Badge({ type }: { type: CashEvent['type'] }) {
   const map: Record<CashEvent['type'], string> = {
     opening: 'bg-blue-100 text-blue-700',
@@ -197,6 +268,10 @@ export default function Home() {
   const [chartWindowStart, setChartWindowStart] = useState(0);
   const [hoveredChartIndex, setHoveredChartIndex] = useState<number | null>(null);
   const [serviceOpen, setServiceOpen] = useState(false);
+  const [ozonAccounts, setOzonAccounts] = useState<OzonAccount[]>([]);
+  const [ozonForm, setOzonForm] = useState<OzonAccountFormState>(OZON_FORM_DEFAULT);
+  const [ozonImporting, setOzonImporting] = useState<{ id: string; mode: OzonImportMode } | null>(null);
+  const [ozonStorageReady, setOzonStorageReady] = useState(false);
 
   const [accountForm, setAccountForm] = useState<AccountFormState>({ name: '', balance: '' });
   const [inflowForm, setInflowForm] = useState<InflowFormState>({
@@ -336,6 +411,31 @@ export default function Home() {
   }, [loadData]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    try {
+      const stored = window.localStorage.getItem(OZON_STORAGE_KEY);
+      if (!stored) {
+        setOzonAccounts([]);
+      } else {
+        const parsed = JSON.parse(stored) as Partial<OzonAccount>[];
+        if (Array.isArray(parsed)) {
+          setOzonAccounts(parsed.map((item) => normalizeOzonAccount(item)));
+        }
+      }
+    } catch {
+      setOzonAccounts([]);
+    } finally {
+      setOzonStorageReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!ozonStorageReady || typeof window === 'undefined') return;
+    window.localStorage.setItem(OZON_STORAGE_KEY, JSON.stringify(ozonAccounts));
+  }, [ozonAccounts, ozonStorageReady]);
+
+  useEffect(() => {
     const supabaseBrowser = getBrowserSupabase();
     if (!supabaseBrowser) return;
 
@@ -411,6 +511,128 @@ export default function Home() {
   const resetMessages = () => {
     setMessage(null);
     setError(null);
+  };
+
+  const handleOzonAccountAdd = () => {
+    resetMessages();
+    if (!ozonForm.name.trim()) {
+      setError('Введите название кабинета Ozon.');
+      return;
+    }
+    if (!ozonForm.clientId.trim() || !ozonForm.apiKey.trim()) {
+      setError('Укажите Client ID и токен Ozon для кабинета.');
+      return;
+    }
+
+    setOzonAccounts((prev) => [
+      ...prev,
+      {
+        id: createLocalId('ozon'),
+        name: ozonForm.name.trim(),
+        clientId: ozonForm.clientId.trim(),
+        apiKey: ozonForm.apiKey.trim(),
+        plannedPercent: ozonForm.plannedPercent.trim(),
+      },
+    ]);
+    setOzonForm(OZON_FORM_DEFAULT);
+    setMessage('Кабинет Ozon добавлен.');
+  };
+
+  const updateOzonAccount = (id: string, field: keyof OzonAccountFormState, value: string) => {
+    setOzonAccounts((prev) =>
+      prev.map((account) => (account.id === id ? { ...account, [field]: value } : account)),
+    );
+  };
+
+  const handleOzonAccountRemove = (account: OzonAccount) => {
+    resetMessages();
+    setOzonAccounts((prev) => prev.filter((item) => item.id !== account.id));
+    setMessage('Кабинет Ozon удалён.');
+  };
+
+  const fetchOzonPayouts = async (account: OzonAccount) => {
+    const todayLocal = formatLocalDate(new Date());
+    const response = await fetch('/api/ozon/payouts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientId: account.clientId,
+        apiKey: account.apiKey,
+        today: todayLocal,
+      }),
+    });
+
+    const payload = await parseJsonSafe<{ items?: OzonPayoutItem[] }>(response);
+    if (!response.ok) {
+      throw new Error(payload.error || 'Не удалось получить выплаты Ozon.');
+    }
+
+    return payload.items ?? [];
+  };
+
+  const buildOzonInflows = (items: OzonPayoutItem[], account: OzonAccount, mode: OzonImportMode) => {
+    const counterpartyName = account.name.trim() ? `Ozon — ${account.name.trim()}` : 'Ozon';
+    const percent = parsePercentInput(account.plannedPercent);
+    const adjustment = mode === 'planned' ? 1 + percent / 100 : 1;
+
+    return items.map((item) => {
+      const periodLabel = formatPeriodLabel(item.period.begin, item.period.end);
+      const baseNote = `Ozon: Оплата реализации за период ${periodLabel}`;
+      const percentLabel =
+        mode === 'planned' && percent !== 0 ? ` ${percent > 0 ? '+' : ''}${percent}%` : '';
+      const notes = mode === 'planned' ? `${baseNote} (прогноз${percentLabel})` : baseNote;
+      const baseDate = parseISO(item.payout_date);
+      const expectedDate =
+        mode === 'planned'
+          ? format(addMonths(baseDate, 1), 'yyyy-MM-dd')
+          : item.payout_date;
+      const amount = Math.round(Number(item.amount) * adjustment * 100) / 100;
+
+      return {
+        counterparty_name: counterpartyName,
+        amount,
+        expected_date: expectedDate,
+        kind: mode,
+        notes,
+      };
+    });
+  };
+
+  const handleOzonImport = async (account: OzonAccount, mode: OzonImportMode) => {
+    resetMessages();
+    if (!account.name.trim() || !account.clientId.trim() || !account.apiKey.trim()) {
+      setError('Заполните название кабинета, Client ID и токен Ozon.');
+      return;
+    }
+
+    setOzonImporting({ id: account.id, mode });
+
+    try {
+      const items = await fetchOzonPayouts(account);
+
+      if (!items.length) {
+        setMessage('Выплаты Ozon не найдены для заданного периода.');
+        return;
+      }
+
+      const inflowsPayload = buildOzonInflows(items, account, mode);
+      const response = await fetch('/api/inflows/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: inflowsPayload }),
+      });
+      const payload = await parseJsonSafe<{ inserted?: number }>(response);
+      if (!response.ok) {
+        throw new Error(payload.error || 'Не удалось сохранить поступления.');
+      }
+
+      setMessage(`Импортировано поступлений: ${payload.inserted ?? inflowsPayload.length}.`);
+      loadData();
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    } finally {
+      setOzonImporting(null);
+    }
   };
 
   const handleSettingsSave = async () => {
@@ -1359,6 +1581,159 @@ export default function Home() {
                       </p>
                     </div>
                   </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Ozon</p>
+                      <p className="text-sm font-semibold text-slate-900">Предстоящие выплаты</p>
+                      <p className="text-xs text-slate-600">
+                        Добавьте кабинеты Ozon. Данные сохраняются в браузере и не отправляются в базу без импорта.
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                      <p>Импорт берёт 5 последних периодов без текущей недели.</p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-[1.2fr_0.8fr_1.4fr_0.6fr]">
+                    <input
+                      type="text"
+                      placeholder="Название кабинета"
+                      value={ozonForm.name}
+                      onChange={(e) => setOzonForm((prev) => ({ ...prev, name: e.target.value }))}
+                      className={inputClassName}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Client ID"
+                      value={ozonForm.clientId}
+                      onChange={(e) => setOzonForm((prev) => ({ ...prev, clientId: e.target.value }))}
+                      className={inputClassName}
+                    />
+                    <input
+                      type="password"
+                      placeholder="API Token"
+                      value={ozonForm.apiKey}
+                      onChange={(e) => setOzonForm((prev) => ({ ...prev, apiKey: e.target.value }))}
+                      className={inputClassName}
+                    />
+                    <input
+                      type="number"
+                      step="0.1"
+                      placeholder="План, %"
+                      value={ozonForm.plannedPercent}
+                      onChange={(e) => setOzonForm((prev) => ({ ...prev, plannedPercent: e.target.value }))}
+                      className={inputClassName}
+                    />
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs text-slate-500">
+                      Плановый процент применяется только к прогнозным выплатам.
+                    </p>
+                    <button
+                      onClick={handleOzonAccountAdd}
+                      className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                    >
+                      Добавить кабинет
+                    </button>
+                  </div>
+
+                  <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="min-w-[960px] table-fixed text-sm">
+                      <thead>
+                        <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
+                          <th className="w-[22%] px-3 py-2">Кабинет</th>
+                          <th className="w-[14%] px-3 py-2">Client ID</th>
+                          <th className="w-[26%] px-3 py-2">API Token</th>
+                          <th className="w-[10%] px-3 py-2">План, %</th>
+                          <th className="w-[28%] px-3 py-2 text-right">Действия</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {ozonAccounts.length === 0 && (
+                          <tr>
+                            <td className="px-3 py-4 text-sm text-slate-500" colSpan={5}>
+                              Кабинеты не добавлены.
+                            </td>
+                          </tr>
+                        )}
+                        {ozonAccounts.map((account) => {
+                          const isBusy = ozonImporting?.id === account.id;
+                          return (
+                            <tr key={account.id} className="align-top">
+                              <td className="px-3 py-3">
+                                <input
+                                  type="text"
+                                  value={account.name}
+                                  onChange={(e) => updateOzonAccount(account.id, 'name', e.target.value)}
+                                  className={inputClassName}
+                                />
+                              </td>
+                              <td className="px-3 py-3">
+                                <input
+                                  type="text"
+                                  value={account.clientId}
+                                  onChange={(e) => updateOzonAccount(account.id, 'clientId', e.target.value)}
+                                  className={inputClassName}
+                                />
+                              </td>
+                              <td className="px-3 py-3">
+                                <input
+                                  type="password"
+                                  value={account.apiKey}
+                                  onChange={(e) => updateOzonAccount(account.id, 'apiKey', e.target.value)}
+                                  className={inputClassName}
+                                />
+                              </td>
+                              <td className="px-3 py-3">
+                                <input
+                                  type="number"
+                                  step="0.1"
+                                  value={account.plannedPercent}
+                                  onChange={(e) => updateOzonAccount(account.id, 'plannedPercent', e.target.value)}
+                                  className={inputClassName}
+                                />
+                              </td>
+                              <td className="px-3 py-3">
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    onClick={() => handleOzonImport(account, 'fixed')}
+                                    disabled={isBusy}
+                                    className="rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700 hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {isBusy && ozonImporting?.mode === 'fixed'
+                                      ? 'Выгружаем…'
+                                      : 'Выгрузить платежи'}
+                                  </button>
+                                  <button
+                                    onClick={() => handleOzonImport(account, 'planned')}
+                                    disabled={isBusy}
+                                    className="rounded-lg border border-indigo-200 px-3 py-2 text-xs font-semibold text-indigo-700 hover:border-indigo-300 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {isBusy && ozonImporting?.mode === 'planned'
+                                      ? 'Выгружаем…'
+                                      : 'Выгрузить плановые'}
+                                  </button>
+                                  <button
+                                    onClick={() => handleOzonAccountRemove(account)}
+                                    disabled={isBusy}
+                                    className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Удалить
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Импорт добавляет новые записи в «Ожидаемые поступления» без удаления старых.
+                  </p>
                 </div>
               </div>
             )}
