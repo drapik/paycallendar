@@ -17,7 +17,7 @@ function toDateKey(value: string | Date): string {
   return formatISO(startOfDay(typeof value === 'string' ? parseISO(value) : value), { representation: 'date' });
 }
 
-function normalizeAmount(value: number | string | null): number {
+function normalizeAmount(value: number | string | null | undefined): number {
   if (!value) return 0;
   const parsed = typeof value === 'string' ? parseFloat(value) : value;
   return Number.isNaN(parsed) ? 0 : parsed;

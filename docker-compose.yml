@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+        - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    container_name: paycallendar-app
+    restart: unless-stopped
+    networks:
+      - proxy
+    environment:
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1
+      - PORT=3000
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_KEY=${SUPABASE_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      - MOYSKLAD_TOKEN=${MOYSKLAD_TOKEN}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.paycallendar-http.rule=Host(`calc.dixel.store`)"
+      - "traefik.http.routers.paycallendar-http.entrypoints=http"
+      - "traefik.http.routers.paycallendar-http.middlewares=paycallendar-https"
+      - "traefik.http.middlewares.paycallendar-https.redirectscheme.scheme=https"
+      - "traefik.http.routers.paycallendar.rule=Host(`calc.dixel.store`)"
+      - "traefik.http.routers.paycallendar.entrypoints=https"
+      - "traefik.http.routers.paycallendar.tls=true"
+      - "traefik.http.routers.paycallendar.tls.certresolver=letsencrypt"
+      - "traefik.http.services.paycallendar.loadbalancer.server.port=3000"
+
+networks:
+  proxy:
+    external: true

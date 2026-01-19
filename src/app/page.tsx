@@ -169,7 +169,7 @@ function formatAmountInput(value: number): string {
 
 type ParsedJson = { error?: string; [key: string]: any };
 
-async function parseJsonSafe<T extends ParsedJson = ParsedJson>(response: Response): Promise<T> {
+async function parseJsonSafe<T extends ParsedJson = ParsedJson & { error?: string }>(response: Response): Promise<T> {
   const contentType = response.headers.get('content-type') || '';
 
   if (contentType.includes('application/json')) {
@@ -467,7 +467,8 @@ export default function Home() {
   }, [loadData]);
 
   useEffect(() => {
-    const cashPlan = buildCashPlan(accounts, inflows, orders, expenses, settings);
+    const normalizedExpenses = expenses.map(e => ({ ...e, amount: Number(e.amount), amount_primary: e.amount_primary ? Number(e.amount_primary) : undefined, amount_secondary: e.amount_secondary ? Number(e.amount_secondary) : undefined }));
+    const cashPlan = buildCashPlan(accounts, inflows, orders, normalizedExpenses, settings);
     setPlan(cashPlan);
   }, [accounts, inflows, orders, expenses, settings]);
 
@@ -562,9 +563,9 @@ export default function Home() {
       }),
     });
 
-    const payload = await parseJsonSafe<{ items?: OzonPayoutItem[] }>(response);
+    const payload = await parseJsonSafe<{ items?: OzonPayoutItem[] } & { error?: string }>(response);
     if (!response.ok) {
-      throw new Error(payload.error || 'Не удалось получить выплаты Ozon.');
+      throw new Error('Не удалось получить выплаты Ozon.');
     }
 
     return payload.items ?? [];
@@ -621,9 +622,9 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: inflowsPayload }),
       });
-      const payload = await parseJsonSafe<{ inserted?: number }>(response);
+      const payload = await parseJsonSafe<{ inserted?: number } & { error?: string }>(response);
       if (!response.ok) {
-        throw new Error(payload.error || 'Не удалось сохранить поступления.');
+      throw new Error('Не удалось сохранить поступления.');
       }
 
       setMessage(`Импортировано поступлений: ${payload.inserted ?? inflowsPayload.length}.`);
