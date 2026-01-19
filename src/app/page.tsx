@@ -1288,9 +1288,11 @@ export default function Home() {
   }, [visibleChartData]);
 
   const chartScale = useMemo(() => {
-    const range = chartBounds.max - chartBounds.min || 1;
+    const lower = Math.min(chartBounds.min, 0);
+    const upper = Math.max(chartBounds.max, 0);
+    const range = upper - lower || 1;
     const padding = range * 0.1;
-    return { min: chartBounds.min - padding, max: chartBounds.max + padding };
+    return { min: lower - padding, max: upper + padding };
   }, [chartBounds.max, chartBounds.min]);
 
   const chartMetrics = useMemo(() => {
@@ -1302,6 +1304,7 @@ export default function Home() {
         xTicks: [] as { x: number; label: string }[],
         yTicks: [] as { y: number; label: string }[],
         xStep: 0,
+        zeroLineY: null as number | null,
       };
     }
 
@@ -1342,7 +1345,9 @@ export default function Home() {
       label: formatDate(visibleChartData[idx].date),
     }));
 
-    return { points, polyline, area, xTicks, yTicks, xStep };
+    const zeroLineY = scaleY(0);
+
+    return { points, polyline, area, xTicks, yTicks, xStep, zeroLineY };
   }, [chartScale.max, chartScale.min, visibleChartData]);
 
   const handleChartMove = useCallback(
@@ -2589,6 +2594,16 @@ export default function Home() {
                   ))}
                   {chartMetrics.area && (
                     <polyline points={chartMetrics.area} fill="url(#balanceGradient)" stroke="none" />
+                  )}
+                  {chartMetrics.zeroLineY !== null && (
+                    <line
+                      x1={CHART_MARGIN.left}
+                      y1={chartMetrics.zeroLineY}
+                      x2={CHART_WIDTH - CHART_MARGIN.right}
+                      y2={chartMetrics.zeroLineY}
+                      stroke="#475569"
+                      strokeWidth="2"
+                    />
                   )}
                   <polyline
                     points={chartMetrics.polyline}
