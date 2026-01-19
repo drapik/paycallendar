@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { evaluateOrderImpact } from '@/lib/cashflow';
-import { Account, IncomingPayment, SupplierOrder } from '@/types/finance';
+import { Account, IncomingPayment, PlannedExpense, SupplierOrder } from '@/types/finance';
 import { DEFAULT_SETTINGS, SETTINGS_KEY, normalizeSettings } from '@/lib/settings';
 
 export const dynamic = 'force-dynamic';
@@ -9,14 +9,15 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: Request) {
   const candidate = (await request.json()) as Partial<SupplierOrder>;
 
-  const [accounts, inflows, orders, settings] = await Promise.all([
+  const [accounts, inflows, orders, expenses, settings] = await Promise.all([
     supabase.from('accounts').select('*'),
     supabase.from('incoming_payments').select('*'),
     supabase.from('supplier_orders').select('*'),
+    supabase.from('planned_expenses').select('*'),
     supabase.from('app_settings').select('*').eq('key', SETTINGS_KEY).maybeSingle(),
   ]);
 
-  const error = accounts.error || inflows.error || orders.error || settings.error;
+  const error = accounts.error || inflows.error || orders.error || expenses.error || settings.error;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -24,6 +25,7 @@ export async function POST(request: Request) {
   const accountsData = (accounts.data ?? []) as Account[];
   const inflowsData = (inflows.data ?? []) as IncomingPayment[];
   const ordersData = (orders.data ?? []) as SupplierOrder[];
+  const expensesData = (expenses.data ?? []) as PlannedExpense[];
   const normalizedCandidate: Omit<SupplierOrder, 'id'> = {
     supplier_id: candidate.supplier_id ?? null,
     supplier_name: null,
@@ -46,6 +48,7 @@ export async function POST(request: Request) {
     accountsData,
     inflowsData,
     relevantOrders,
+    expensesData,
     normalizedCandidate,
     normalizeSettings(settings.data ?? DEFAULT_SETTINGS),
   );

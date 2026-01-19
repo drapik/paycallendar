@@ -11,6 +11,7 @@ import {
   Currency,
   DailyStat,
   IncomingPayment,
+  PlannedExpense,
   Supplier,
   SupplierOrder,
 } from '@/types/finance';
@@ -45,6 +46,15 @@ interface InflowFormState {
   notes: string;
 }
 
+interface ExpenseFormState {
+  title: string;
+  totalAmount: string;
+  primaryAmount: string;
+  secondaryAmount: string;
+  dayPrimary: string;
+  daySecondary: string;
+}
+
 interface CheckResult {
   ok: boolean;
   cashGap: number;
@@ -58,13 +68,19 @@ type OrderWithSupplier = SupplierOrder & {
   deposit_amount: number | string;
 };
 type InflowRow = IncomingPayment & { amount: number | string; counterparties?: { name?: string | null } | null };
-type CleanupTarget = 'all' | 'accounts' | 'suppliers' | 'counterparties' | 'orders' | 'inflows';
+type ExpenseRow = Omit<PlannedExpense, 'amount' | 'amount_primary' | 'amount_secondary'> & {
+  amount: number | string;
+  amount_primary?: number | string | null;
+  amount_secondary?: number | string | null;
+};
+type CleanupTarget = 'all' | 'accounts' | 'suppliers' | 'counterparties' | 'orders' | 'inflows' | 'expenses';
 interface DataResponse {
   accounts: AccountRow[];
   suppliers: Supplier[];
   counterparties: Counterparty[];
   orders: OrderWithSupplier[];
   inflows: InflowRow[];
+  expenses: ExpenseRow[];
   settings: AppSettings;
   error?: string;
 }
@@ -77,6 +93,7 @@ const today = new Date().toISOString().slice(0, 10);
 const ORDERS_PAGE_SIZE = 5;
 const ACCOUNTS_PAGE_SIZE = 5;
 const INFLOWS_PAGE_SIZE = 5;
+const EXPENSES_PAGE_SIZE = 5;
 const DAILY_PAGE_SIZE = 10;
 const DEFAULT_CHART_WINDOW = 30;
 const MIN_CHART_WINDOW = 7;
@@ -85,6 +102,7 @@ const CHART_HEIGHT = 280;
 const CHART_MARGIN = { top: 20, right: 24, bottom: 40, left: 72 };
 const CHART_Y_TICKS = 5;
 const CHART_X_TICKS = 6;
+const EXPENSE_DAY_OPTIONS = Array.from({ length: 31 }, (_, idx) => idx + 1);
 
 function formatDate(date: string) {
   try {
@@ -106,6 +124,19 @@ function formatCurrency(amount: number, currency: Currency) {
 function formatRubEquivalent(amount: number, currency: Currency, settings: AppSettings) {
   const rate = currencyRate(currency, settings);
   return (Number(amount ?? 0) * rate).toLocaleString('ru-RU');
+}
+
+function parseAmountInput(value: string): number | null {
+  if (!value.trim()) return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+}
+
+function formatAmountInput(value: number): string {
+  if (!Number.isFinite(value)) return '';
+  const rounded = Math.round(value * 100) / 100;
+  return String(rounded);
 }
 
 type ParsedJson = { error?: string; [key: string]: any };
@@ -147,6 +178,7 @@ export default function Home() {
   const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
   const [orders, setOrders] = useState<OrderWithSupplier[]>([]);
   const [inflows, setInflows] = useState<InflowRow[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [importingOrders, setImportingOrders] = useState(false);
   const [checkingOrders, setCheckingOrders] = useState(false);
@@ -158,11 +190,13 @@ export default function Home() {
   const [ordersPage, setOrdersPage] = useState(1);
   const [accountsPage, setAccountsPage] = useState(1);
   const [inflowsPage, setInflowsPage] = useState(1);
+  const [expensesPage, setExpensesPage] = useState(1);
   const [dailyPage, setDailyPage] = useState(1);
   const [cleaningTarget, setCleaningTarget] = useState<CleanupTarget | null>(null);
   const [chartWindowSize, setChartWindowSize] = useState(DEFAULT_CHART_WINDOW);
   const [chartWindowStart, setChartWindowStart] = useState(0);
   const [hoveredChartIndex, setHoveredChartIndex] = useState<number | null>(null);
+  const [serviceOpen, setServiceOpen] = useState(false);
 
   const [accountForm, setAccountForm] = useState<AccountFormState>({ name: '', balance: '' });
   const [inflowForm, setInflowForm] = useState<InflowFormState>({
@@ -173,6 +207,15 @@ export default function Home() {
     kind: 'fixed',
     notes: '',
   });
+  const [expenseForm, setExpenseForm] = useState<ExpenseFormState>({
+    title: '',
+    totalAmount: '',
+    primaryAmount: '',
+    secondaryAmount: '',
+    dayPrimary: String(new Date().getDate()),
+    daySecondary: '',
+  });
+  const [expensePartEdited, setExpensePartEdited] = useState<'primary' | 'secondary' | null>(null);
   const [orderForm, setOrderForm] = useState<OrderFormState>({
     title: '',
     supplierId: '',
@@ -195,7 +238,7 @@ export default function Home() {
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>({
     cnyRate: DEFAULT_SETTINGS.cnyRate.toString(),
   });
-  const [activeTab, setActiveTab] = useState<'orders' | 'accounts' | 'inflows'>('orders');
+  const [activeTab, setActiveTab] = useState<'orders' | 'accounts' | 'inflows' | 'expenses'>('orders');
 
   const totalBalance = useMemo(
     () => accounts.reduce((sum, item) => sum + Number(item.balance ?? 0), 0),
@@ -257,6 +300,20 @@ export default function Home() {
         amount: Number(item.amount ?? 0),
       }));
 
+      const normalizedExpenses: ExpenseRow[] = (payload.expenses ?? []).map((item) => ({
+        ...item,
+        amount: Number(item.amount ?? 0),
+        amount_primary:
+          item.amount_primary === null || item.amount_primary === undefined ? null : Number(item.amount_primary),
+        amount_secondary:
+          item.amount_secondary === null || item.amount_secondary === undefined ? null : Number(item.amount_secondary),
+        day_primary: Number(item.day_primary ?? 1),
+        day_secondary:
+          item.day_secondary === null || item.day_secondary === undefined
+            ? null
+            : Number(item.day_secondary),
+      }));
+
       const normalizedSettings = normalizeSettings(payload.settings || DEFAULT_SETTINGS);
 
       setAccounts(normalizedAccounts);
@@ -264,6 +321,7 @@ export default function Home() {
       setCounterparties(payload.counterparties || []);
       setOrders(normalizedOrders);
       setInflows(normalizedInflows);
+      setExpenses(normalizedExpenses);
       setSettings(normalizedSettings);
       setSettingsForm({ cnyRate: normalizedSettings.cnyRate.toString() });
     } catch (err) {
@@ -298,6 +356,7 @@ export default function Home() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'counterparties' }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'supplier_orders' }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'incoming_payments' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'planned_expenses' }, scheduleRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, scheduleRefresh)
       .subscribe();
 
@@ -308,9 +367,9 @@ export default function Home() {
   }, [loadData]);
 
   useEffect(() => {
-    const cashPlan = buildCashPlan(accounts, inflows, orders, settings);
+    const cashPlan = buildCashPlan(accounts, inflows, orders, expenses, settings);
     setPlan(cashPlan);
-  }, [accounts, inflows, orders, settings]);
+  }, [accounts, inflows, orders, expenses, settings]);
 
   useEffect(() => {
     if (!editingOrderId) {
@@ -338,6 +397,11 @@ export default function Home() {
     const totalPages = Math.max(1, Math.ceil(inflows.length / INFLOWS_PAGE_SIZE));
     setInflowsPage((prev) => Math.min(prev, totalPages));
   }, [inflows.length]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(expenses.length / EXPENSES_PAGE_SIZE));
+    setExpensesPage((prev) => Math.min(prev, totalPages));
+  }, [expenses.length]);
 
   useEffect(() => {
     const totalPages = Math.max(1, Math.ceil((plan?.daily.length || 0) / DAILY_PAGE_SIZE));
@@ -419,6 +483,7 @@ export default function Home() {
     counterparties: 'контрагентах',
     orders: 'заказах поставщикам',
     inflows: 'поступлениях',
+    expenses: 'расходах',
   };
 
   const handleCleanup = async (target: CleanupTarget) => {
@@ -576,6 +641,180 @@ export default function Home() {
     } catch (err) {
       setError(extractErrorMessage(err));
     }
+  };
+
+  const handleExpenseSubmit = async () => {
+    resetMessages();
+    try {
+      const totalAmount = parseAmountInput(expenseForm.totalAmount);
+      if (!expenseForm.title || totalAmount === null || !expenseForm.dayPrimary) {
+        throw new Error('Укажите название, сумму и дату расхода');
+      }
+      if (totalAmount < 0) {
+        throw new Error('Сумма расхода не может быть отрицательной');
+      }
+
+      const secondaryDay = expenseForm.daySecondary ? Number(expenseForm.daySecondary) : null;
+      const primaryProvided = expenseForm.primaryAmount.trim() !== '';
+      const secondaryProvided = expenseForm.secondaryAmount.trim() !== '';
+      const primaryAmount = primaryProvided ? parseAmountInput(expenseForm.primaryAmount) : null;
+      const secondaryAmount = secondaryProvided ? parseAmountInput(expenseForm.secondaryAmount) : null;
+
+      if (primaryProvided && primaryAmount === null) {
+        throw new Error('Неверная сумма для первой даты');
+      }
+
+      if (secondaryProvided && secondaryAmount === null) {
+        throw new Error('Неверная сумма для второй даты');
+      }
+
+      let resolvedPrimary: number | null = null;
+      let resolvedSecondary: number | null = null;
+
+      if (secondaryDay) {
+        if (!primaryProvided && !secondaryProvided) {
+          throw new Error('Укажите сумму для одной из дат');
+        }
+
+        resolvedPrimary = primaryAmount;
+        resolvedSecondary = secondaryAmount;
+
+        if (resolvedPrimary !== null && resolvedSecondary === null) {
+          resolvedSecondary = totalAmount - resolvedPrimary;
+        }
+
+        if (resolvedSecondary !== null && resolvedPrimary === null) {
+          resolvedPrimary = totalAmount - resolvedSecondary;
+        }
+
+        if (resolvedPrimary === null || resolvedSecondary === null) {
+          throw new Error('Не удалось рассчитать суммы расхода');
+        }
+
+        if (resolvedPrimary < 0 || resolvedSecondary < 0) {
+          throw new Error('Суммы частей не могут быть отрицательными');
+        }
+
+        if (Math.abs(resolvedPrimary + resolvedSecondary - totalAmount) > 0.01) {
+          throw new Error('Сумма частей должна равняться общей сумме');
+        }
+      }
+
+      const response = await fetch('/api/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: expenseForm.title,
+          amount: totalAmount,
+          day_primary: Number(expenseForm.dayPrimary),
+          day_secondary: secondaryDay,
+          amount_primary: secondaryDay ? resolvedPrimary : null,
+          amount_secondary: secondaryDay ? resolvedSecondary : null,
+        }),
+      });
+      const payload = await parseJsonSafe(response);
+      if (!response.ok) throw new Error(payload.error || 'Не удалось добавить расход');
+      setExpenseForm({
+        title: '',
+        totalAmount: '',
+        primaryAmount: '',
+        secondaryAmount: '',
+        dayPrimary: String(new Date().getDate()),
+        daySecondary: '',
+      });
+      setExpensePartEdited(null);
+      setMessage('Расход добавлен');
+      loadData();
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  };
+
+  const handleExpenseDelete = async (expense: { id: string }) => {
+    resetMessages();
+    try {
+      const response = await fetch(`/api/expenses?id=${expense.id}`, { method: 'DELETE' });
+      const payload = await parseJsonSafe(response);
+      if (!response.ok) throw new Error(payload.error || 'Не удалось удалить расход');
+      setMessage('Расход удалён');
+      await loadData();
+    } catch (err) {
+      setError(extractErrorMessage(err));
+    }
+  };
+
+  const handleExpenseTotalChange = (value: string) => {
+    setExpenseForm((prev) => {
+      const next = { ...prev, totalAmount: value };
+      if (!prev.daySecondary) return next;
+      const total = parseAmountInput(value);
+      if (total === null) return next;
+
+      const primary = parseAmountInput(prev.primaryAmount);
+      const secondary = parseAmountInput(prev.secondaryAmount);
+
+      if (expensePartEdited === 'primary' && primary !== null) {
+        next.secondaryAmount = formatAmountInput(total - primary);
+      } else if (expensePartEdited === 'secondary' && secondary !== null) {
+        next.primaryAmount = formatAmountInput(total - secondary);
+      } else if (primary !== null) {
+        next.secondaryAmount = formatAmountInput(total - primary);
+      } else if (secondary !== null) {
+        next.primaryAmount = formatAmountInput(total - secondary);
+      }
+
+      return next;
+    });
+  };
+
+  const handleExpensePrimaryChange = (value: string) => {
+    setExpensePartEdited('primary');
+    setExpenseForm((prev) => {
+      const next = { ...prev, primaryAmount: value };
+      if (!prev.daySecondary) return next;
+      const total = parseAmountInput(prev.totalAmount);
+      const primary = parseAmountInput(value);
+      if (total === null || primary === null) return next;
+      next.secondaryAmount = formatAmountInput(total - primary);
+      return next;
+    });
+  };
+
+  const handleExpenseSecondaryChange = (value: string) => {
+    setExpensePartEdited('secondary');
+    setExpenseForm((prev) => {
+      const next = { ...prev, secondaryAmount: value };
+      if (!prev.daySecondary) return next;
+      const total = parseAmountInput(prev.totalAmount);
+      const secondary = parseAmountInput(value);
+      if (total === null || secondary === null) return next;
+      next.primaryAmount = formatAmountInput(total - secondary);
+      return next;
+    });
+  };
+
+  const handleExpenseSecondaryDayChange = (value: string) => {
+    if (!value) {
+      setExpensePartEdited(null);
+    }
+    setExpenseForm((prev) => {
+      const next = { ...prev, daySecondary: value };
+      if (!value) {
+        next.primaryAmount = '';
+        next.secondaryAmount = '';
+        return next;
+      }
+      const total = parseAmountInput(prev.totalAmount);
+      if (total === null) return next;
+      const primary = parseAmountInput(prev.primaryAmount);
+      const secondary = parseAmountInput(prev.secondaryAmount);
+      if (primary !== null) {
+        next.secondaryAmount = formatAmountInput(total - primary);
+      } else if (secondary !== null) {
+        next.primaryAmount = formatAmountInput(total - secondary);
+      }
+      return next;
+    });
   };
 
   const resolveSupplierId = async (): Promise<string | null> => {
@@ -768,6 +1007,12 @@ export default function Home() {
     return inflows.slice(start, start + INFLOWS_PAGE_SIZE);
   }, [inflows, inflowsPage]);
 
+  const totalExpensePages = Math.max(1, Math.ceil(expenses.length / EXPENSES_PAGE_SIZE));
+  const paginatedExpenses = useMemo(() => {
+    const start = (expensesPage - 1) * EXPENSES_PAGE_SIZE;
+    return expenses.slice(start, start + EXPENSES_PAGE_SIZE);
+  }, [expenses, expensesPage]);
+
   const totalDailyPages = Math.max(1, Math.ceil((plan?.daily.length || 0) / DAILY_PAGE_SIZE));
   const paginatedDaily = useMemo(() => {
     const start = (dailyPage - 1) * DAILY_PAGE_SIZE;
@@ -927,7 +1172,7 @@ export default function Home() {
   const inputMutedClassName =
     'w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900';
   const textareaClassName = `${inputClassName} min-h-[88px]`;
-  const tabButtonClass = (tab: 'orders' | 'accounts' | 'inflows') =>
+  const tabButtonClass = (tab: 'orders' | 'accounts' | 'inflows' | 'expenses') =>
     `rounded-lg border px-4 py-2 text-sm font-semibold transition ${
       activeTab === tab
         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
@@ -966,120 +1211,157 @@ export default function Home() {
           </div>
         )}
 
-        <section className="mt-8 grid gap-4 lg:grid-cols-3">
-          <div className="rounded-2xl bg-white p-5 shadow-sm lg:col-span-2">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <section className="mt-8">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs uppercase tracking-wide text-slate-500">Технические настройки</p>
-                <h2 className="text-lg font-semibold text-slate-900">Курс валют и сервисные действия</h2>
-                <p className="text-sm text-slate-600">Все расчёты ведутся в рублях, суммы в юанях пересчитываются по указанному курсу.</p>
+                <h2 className="text-lg font-semibold text-slate-900">Сервисный блок</h2>
+                <p className="text-sm text-slate-600">Курс валют, импорт заказов и очистка данных.</p>
               </div>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                <p>Курс применяется ко всем заказам с валютой «Юань»</p>
-              </div>
-            </div>
-            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
-              <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
-                Курс юаня (CNY → ₽)
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={settingsForm.cnyRate}
-                  onChange={(e) => setSettingsForm((prev) => ({ ...prev, cnyRate: e.target.value }))}
-                  className="w-full rounded-lg border px-3 py-2"
-                />
-              </label>
               <button
-                onClick={handleSettingsSave}
-                className="h-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                type="button"
+                onClick={() => setServiceOpen((prev) => !prev)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:border-slate-300"
+                aria-expanded={serviceOpen}
+                aria-controls="service-panel"
               >
-                Сохранить настройки
+                {serviceOpen ? 'Свернуть' : 'Развернуть'}
               </button>
             </div>
-          </div>
-          <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm font-semibold text-slate-900">Сервисный блок</p>
-            <p className="mt-2 text-sm text-slate-600">
-              Здесь можно разместить технические кнопки вроде выгрузки заказов или очистки базы. Добавляйте новые элементы по мере необходимости.
-            </p>
-            <div className="mt-4 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
-              <p>Текущий курс: {settings.cnyRate.toLocaleString('ru-RU')} ₽ за 1 ¥</p>
-              <p>Базовая валюта: российские рубли</p>
-            </div>
-            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <p className="text-xs uppercase tracking-wide text-slate-500">МойСклад</p>
-              <p className="mt-1 text-xs text-slate-600">
-                Импорт заказов поставщикам по фильтрам (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
+            {!serviceOpen && (
+              <p className="mt-3 text-xs text-slate-500">
+                Разверните блок, чтобы настроить курс валют и сервисные действия.
               </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  onClick={handleMoyskladCount}
-                  disabled={checkingOrders || importingOrders}
-                  className="rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700 hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {checkingOrders ? 'Проверяем…' : 'Проверить количество'}
-                </button>
-                <button
-                  onClick={handleMoyskladImport}
-                  disabled={importingOrders}
-                  className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {importingOrders ? 'Выгружаем…' : 'Выгрузить заказы'}
-                </button>
+            )}
+            {serviceOpen && (
+              <div id="service-panel" className="mt-4 space-y-4">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Курс валют</p>
+                      <p className="text-sm font-semibold text-slate-900">Курс юаня (CNY → ₽)</p>
+                      <p className="text-xs text-slate-600">
+                        Все расчёты ведутся в рублях, суммы в юанях пересчитываются по указанному курсу.
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                      <p>Курс применяется ко всем заказам с валютой «Юань»</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+                    <label className="flex flex-col gap-1 text-sm font-medium text-slate-700">
+                      Курс юаня (CNY → ₽)
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={settingsForm.cnyRate}
+                        onChange={(e) => setSettingsForm((prev) => ({ ...prev, cnyRate: e.target.value }))}
+                        className="w-full rounded-lg border px-3 py-2"
+                      />
+                    </label>
+                    <button
+                      onClick={handleSettingsSave}
+                      className="h-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                    >
+                      Сохранить настройки
+                    </button>
+                  </div>
+                  <div className="mt-3 rounded-lg bg-white p-3 text-xs text-slate-600">
+                    <p>Текущий курс: {settings.cnyRate.toLocaleString('ru-RU')} ₽ за 1 ¥</p>
+                    <p>Базовая валюта: российские рубли</p>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <p className="text-xs uppercase tracking-wide text-slate-500">МойСклад</p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      Импорт заказов поставщикам по фильтрам (агент «Маркетплейсы», статусы «Не принято», «В пути», «Частично принято»).
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={handleMoyskladCount}
+                        disabled={checkingOrders || importingOrders}
+                        className="rounded-lg border border-emerald-200 px-3 py-2 text-xs font-semibold text-emerald-700 hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {checkingOrders ? 'Проверяем…' : 'Проверить количество'}
+                      </button>
+                      <button
+                        onClick={handleMoyskladImport}
+                        disabled={importingOrders}
+                        className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {importingOrders ? 'Выгружаем…' : 'Выгрузить заказы'}
+                      </button>
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      Источник: https://api.moysklad.ru/api/remap/1.2/entity/purchaseorder
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-slate-700">Очистка данных</p>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <button
+                          onClick={() => handleCleanup('all')}
+                          disabled={!!cleaningTarget}
+                          className="rounded-lg border border-rose-200 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cleaningTarget === 'all' ? 'Очищаем всё…' : 'Очистить всю базу'}
+                        </button>
+                        <button
+                          onClick={() => handleCleanup('orders')}
+                          disabled={!!cleaningTarget}
+                          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cleaningTarget === 'orders' ? 'Удаляем заказы…' : 'Удалить заказы поставщикам'}
+                        </button>
+                        <button
+                          onClick={() => handleCleanup('accounts')}
+                          disabled={!!cleaningTarget}
+                          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cleaningTarget === 'accounts' ? 'Удаляем счета…' : 'Удалить счета'}
+                        </button>
+                        <button
+                          onClick={() => handleCleanup('inflows')}
+                          disabled={!!cleaningTarget}
+                          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cleaningTarget === 'inflows' ? 'Удаляем поступления…' : 'Удалить поступления'}
+                        </button>
+                        <button
+                          onClick={() => handleCleanup('expenses')}
+                          disabled={!!cleaningTarget}
+                          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cleaningTarget === 'expenses' ? 'Удаляем расходы…' : 'Удалить расходы'}
+                        </button>
+                        <button
+                          onClick={() => handleCleanup('suppliers')}
+                          disabled={!!cleaningTarget}
+                          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cleaningTarget === 'suppliers' ? 'Удаляем поставщиков…' : 'Удалить поставщиков'}
+                        </button>
+                        <button
+                          onClick={() => handleCleanup('counterparties')}
+                          disabled={!!cleaningTarget}
+                          className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {cleaningTarget === 'counterparties' ? 'Удаляем контрагентов…' : 'Удалить контрагентов'}
+                        </button>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        Очистка удаляет записи из таблиц без восстановления. Используйте осторожно.
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <p className="mt-2 text-[11px] text-slate-500">
-                Источник: https://api.moysklad.ru/api/remap/1.2/entity/purchaseorder
-              </p>
-            </div>
-            <div className="mt-4 space-y-2">
-              <p className="text-xs font-semibold text-slate-700">Очистка данных</p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <button
-                  onClick={() => handleCleanup('all')}
-                  disabled={!!cleaningTarget}
-                  className="rounded-lg border border-rose-200 px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {cleaningTarget === 'all' ? 'Очищаем всё…' : 'Очистить всю базу'}
-                </button>
-                <button
-                  onClick={() => handleCleanup('orders')}
-                  disabled={!!cleaningTarget}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {cleaningTarget === 'orders' ? 'Удаляем заказы…' : 'Удалить заказы поставщикам'}
-                </button>
-                <button
-                  onClick={() => handleCleanup('accounts')}
-                  disabled={!!cleaningTarget}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {cleaningTarget === 'accounts' ? 'Удаляем счета…' : 'Удалить счета'}
-                </button>
-                <button
-                  onClick={() => handleCleanup('inflows')}
-                  disabled={!!cleaningTarget}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {cleaningTarget === 'inflows' ? 'Удаляем поступления…' : 'Удалить поступления'}
-                </button>
-                <button
-                  onClick={() => handleCleanup('suppliers')}
-                  disabled={!!cleaningTarget}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {cleaningTarget === 'suppliers' ? 'Удаляем поставщиков…' : 'Удалить поставщиков'}
-                </button>
-                <button
-                  onClick={() => handleCleanup('counterparties')}
-                  disabled={!!cleaningTarget}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {cleaningTarget === 'counterparties' ? 'Удаляем контрагентов…' : 'Удалить контрагентов'}
-                </button>
-              </div>
-              <p className="text-xs text-slate-500">Очистка удаляет записи из таблиц без восстановления. Используйте осторожно.</p>
-            </div>
+            )}
           </div>
         </section>
 
@@ -1089,7 +1371,7 @@ export default function Home() {
               <div>
                 <h2 className="text-lg font-semibold">Управление сущностями</h2>
                 <p className="text-sm text-slate-600">
-                  Счета, ожидаемые поступления и заказы поставщикам — единый интерфейс с вкладками.
+                  Счета, расходы, ожидаемые поступления и заказы поставщикам — единый интерфейс с вкладками.
                 </p>
               </div>
               <span className="text-xs text-slate-500">Заказы — в карточке, остальные сущности — во вкладках</span>
@@ -1121,6 +1403,15 @@ export default function Home() {
                 onClick={() => setActiveTab('inflows')}
               >
                 Ожидаемые поступления
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'expenses'}
+                className={tabButtonClass('expenses')}
+                onClick={() => setActiveTab('expenses')}
+              >
+                Расходы
               </button>
             </div>
 
@@ -1550,6 +1841,200 @@ export default function Home() {
                       className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
                     >
                       Сохранить поступление
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'expenses' && (
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold">Плановые расходы</p>
+                      <span className="text-xs text-slate-500">Ежемесячно по выбранным датам</span>
+                    </div>
+                    {paginatedExpenses.map((item) => {
+                      const totalAmount = Number(item.amount ?? 0);
+                      const hasSplit = item.day_secondary !== null && item.day_secondary !== undefined;
+                      const primaryProvided = item.amount_primary !== null && item.amount_primary !== undefined;
+                      const secondaryProvided = item.amount_secondary !== null && item.amount_secondary !== undefined;
+                      let primaryAmount = primaryProvided ? Number(item.amount_primary) : null;
+                      let secondaryAmount = secondaryProvided ? Number(item.amount_secondary) : null;
+
+                      if (hasSplit) {
+                        if (primaryAmount !== null && secondaryAmount === null) {
+                          secondaryAmount = totalAmount - primaryAmount;
+                        }
+
+                        if (secondaryAmount !== null && primaryAmount === null) {
+                          primaryAmount = totalAmount - secondaryAmount;
+                        }
+                        if (primaryAmount === null && secondaryAmount === null) {
+                          primaryAmount = totalAmount;
+                        }
+                      } else if (primaryAmount === null) {
+                        primaryAmount = totalAmount;
+                      }
+
+                      return (
+                        <div key={item.id} className="rounded-lg border p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <p className="font-semibold">{item.title}</p>
+                              <p className="text-xs text-slate-500">
+                                {hasSplit
+                                  ? `Даты: ${item.day_primary} и ${item.day_secondary} числа`
+                                  : `Дата: ${item.day_primary} числа`}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <div className="text-right">
+                                <p className="text-xs text-slate-500">Общая сумма</p>
+                                <p className="font-semibold">{totalAmount.toLocaleString('ru-RU')} ₽</p>
+                                {primaryAmount !== null && (
+                                  <p className="text-xs text-slate-500">
+                                    {item.day_primary} число — {primaryAmount.toLocaleString('ru-RU')} ₽
+                                  </p>
+                                )}
+                                {hasSplit && secondaryAmount !== null && (
+                                  <p className="text-xs text-slate-500">
+                                    {item.day_secondary} число — {secondaryAmount.toLocaleString('ru-RU')} ₽
+                                  </p>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => handleExpenseDelete(item)}
+                                className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                              >
+                                Удалить
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {expenses.length > EXPENSES_PAGE_SIZE && (
+                      <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="text-sm text-slate-600">
+                          Страница {expensesPage} из {totalExpensePages}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => setExpensesPage((page) => Math.max(1, page - 1))}
+                            disabled={expensesPage === 1}
+                            className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Назад
+                          </button>
+                          {Array.from({ length: totalExpensePages }).map((_, idx) => {
+                            const page = idx + 1;
+                            return (
+                              <button
+                                key={page}
+                                onClick={() => setExpensesPage(page)}
+                                className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                                  page === expensesPage
+                                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    : 'text-slate-700 hover:border-slate-300'
+                                }`}
+                              >
+                                {page}
+                              </button>
+                            );
+                          })}
+                          <button
+                            onClick={() => setExpensesPage((page) => Math.min(totalExpensePages, page + 1))}
+                            disabled={expensesPage === totalExpensePages}
+                            className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Вперёд
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-3 rounded-xl border border-dashed p-4">
+                    <p className="text-sm font-semibold">Добавить расход</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <input
+                        type="text"
+                        placeholder="Название расхода"
+                        value={expenseForm.title}
+                        onChange={(e) => setExpenseForm((prev) => ({ ...prev, title: e.target.value }))}
+                        className={`col-span-2 ${inputClassName}`}
+                      />
+                      <input
+                        type="number"
+                        placeholder="Общая сумма"
+                        value={expenseForm.totalAmount}
+                        onChange={(e) => handleExpenseTotalChange(e.target.value)}
+                        className={`col-span-2 ${inputClassName}`}
+                      />
+                      <label className="flex flex-col gap-1 text-xs font-semibold text-slate-600">
+                        Первая дата
+                        <select
+                          value={expenseForm.dayPrimary}
+                          onChange={(e) => setExpenseForm((prev) => ({ ...prev, dayPrimary: e.target.value }))}
+                          className={inputClassName}
+                        >
+                          {EXPENSE_DAY_OPTIONS.map((day) => (
+                            <option key={day} value={day}>
+                              {day}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="flex flex-col gap-1 text-xs font-semibold text-slate-600">
+                        Вторая дата (опционально)
+                        <select
+                          value={expenseForm.daySecondary}
+                          onChange={(e) => handleExpenseSecondaryDayChange(e.target.value)}
+                          className={inputClassName}
+                        >
+                          <option value="">—</option>
+                          {EXPENSE_DAY_OPTIONS.map((day) => (
+                            <option key={day} value={day}>
+                              {day}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {expenseForm.daySecondary ? (
+                        <>
+                          <input
+                            type="number"
+                            placeholder="Сумма на первую дату"
+                            value={expenseForm.primaryAmount}
+                            onChange={(e) => handleExpensePrimaryChange(e.target.value)}
+                            className={inputClassName}
+                          />
+                          <input
+                            type="number"
+                            placeholder="Сумма на вторую дату"
+                            value={expenseForm.secondaryAmount}
+                            onChange={(e) => handleExpenseSecondaryChange(e.target.value)}
+                            className={inputClassName}
+                          />
+                          <p className="col-span-2 text-xs text-slate-500">
+                            Вторая сумма пересчитывается автоматически при вводе первой и наоборот.
+                          </p>
+                        </>
+                      ) : (
+                        <p className="col-span-2 text-xs text-slate-500">
+                          Если вторая дата не указана, расход списывается целиком в первую дату.
+                        </p>
+                      )}
+                      <p className="col-span-2 text-xs text-slate-500">
+                        Если выбрать 31-е число, в коротких месяцах дата сдвигается на последний день.
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleExpenseSubmit}
+                      className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                    >
+                      Сохранить расход
                     </button>
                   </div>
                 </div>

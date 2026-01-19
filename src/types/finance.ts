@@ -51,6 +51,18 @@ export interface IncomingPayment {
   updated_at?: string;
 }
 
+export interface PlannedExpense {
+  id: string;
+  title: string;
+  amount: number;
+  amount_primary?: number | null;
+  amount_secondary?: number | null;
+  day_primary: number;
+  day_secondary?: number | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export type CashEventType = 'opening' | 'inflow' | 'outflow';
 
 export interface CashEvent {

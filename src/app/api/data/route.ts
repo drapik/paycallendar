@@ -36,11 +36,12 @@ export async function GET() {
         },
       ],
       inflows: [],
+      expenses: [],
       settings: normalizeSettings(DEFAULT_SETTINGS),
     });
   }
 
-  const [accounts, suppliers, counterparties, orders, inflows, settings] = await Promise.all([
+  const [accounts, suppliers, counterparties, orders, inflows, expenses, settings] = await Promise.all([
     supabase.from('accounts').select('*').order('created_at'),
     supabase.from('suppliers').select('*').order('name'),
     supabase.from('counterparties').select('*').order('name'),
@@ -49,11 +50,18 @@ export async function GET() {
       .select('*, suppliers(name)')
       .order('due_date', { ascending: true }),
     supabase.from('incoming_payments').select('*, counterparties(name)').order('expected_date'),
+    supabase.from('planned_expenses').select('*').order('created_at'),
     supabase.from('app_settings').select('*').eq('key', SETTINGS_KEY).maybeSingle(),
   ]);
 
   const error =
-    accounts.error || suppliers.error || counterparties.error || orders.error || inflows.error || settings.error;
+    accounts.error ||
+    suppliers.error ||
+    counterparties.error ||
+    orders.error ||
+    inflows.error ||
+    expenses.error ||
+    settings.error;
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
@@ -69,6 +77,7 @@ export async function GET() {
     counterparties: counterparties.data,
     orders: normalizedOrders,
     inflows: inflows.data,
+    expenses: expenses.data,
     settings: normalizeSettings(settings.data ?? DEFAULT_SETTINGS),
   });
 }

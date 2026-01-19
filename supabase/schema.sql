@@ -72,6 +72,19 @@ create table if not exists public.incoming_payments (
   updated_at timestamptz not null default now()
 );
 
+-- Плановые расходы (ежемесячные)
+create table if not exists public.planned_expenses (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  amount numeric not null,
+  amount_primary numeric,
+  amount_secondary numeric,
+  day_primary smallint not null check (day_primary between 1 and 31),
+  day_secondary smallint check (day_secondary between 1 and 31),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_incoming_payments_date on public.incoming_payments(expected_date);
 create index if not exists idx_incoming_payments_counterparty on public.incoming_payments(counterparty_id);
 create index if not exists idx_supplier_orders_due_date on public.supplier_orders(due_date);
@@ -96,6 +109,15 @@ alter table if exists public.counterparties
 alter table if exists public.incoming_payments
   add column if not exists updated_at timestamptz not null default now();
 
+alter table if exists public.planned_expenses
+  add column if not exists updated_at timestamptz not null default now();
+
+alter table if exists public.planned_expenses
+  add column if not exists amount_primary numeric;
+
+alter table if exists public.planned_expenses
+  add column if not exists amount_secondary numeric;
+
 drop trigger if exists set_accounts_updated_at on public.accounts;
 create trigger set_accounts_updated_at
 before update on public.accounts
@@ -119,6 +141,11 @@ for each row execute function public.set_updated_at();
 drop trigger if exists set_incoming_payments_updated_at on public.incoming_payments;
 create trigger set_incoming_payments_updated_at
 before update on public.incoming_payments
+for each row execute function public.set_updated_at();
+
+drop trigger if exists set_planned_expenses_updated_at on public.planned_expenses;
+create trigger set_planned_expenses_updated_at
+before update on public.planned_expenses
 for each row execute function public.set_updated_at();
 
 drop trigger if exists set_app_settings_updated_at on public.app_settings;

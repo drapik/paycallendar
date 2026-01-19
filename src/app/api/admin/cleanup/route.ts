@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
-type CleanupTarget = 'all' | 'accounts' | 'suppliers' | 'counterparties' | 'orders' | 'inflows';
+type CleanupTarget = 'all' | 'accounts' | 'suppliers' | 'counterparties' | 'orders' | 'inflows' | 'expenses';
 
 const TABLES: Record<Exclude<CleanupTarget, 'all'>, string> = {
   accounts: 'accounts',
@@ -11,6 +11,7 @@ const TABLES: Record<Exclude<CleanupTarget, 'all'>, string> = {
   counterparties: 'counterparties',
   orders: 'supplier_orders',
   inflows: 'incoming_payments',
+  expenses: 'planned_expenses',
 };
 
 async function purgeTable(table: string) {
@@ -47,7 +48,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          'Укажите цель очистки: all, accounts, suppliers, counterparties, orders или inflows в поле target тела запроса.',
+          'Укажите цель очистки: all, accounts, suppliers, counterparties, orders, inflows или expenses в поле target тела запроса.',
       },
       { status: 400 },
     );
