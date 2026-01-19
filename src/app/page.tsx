@@ -188,6 +188,9 @@ export default function Home() {
   const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
   const [editingOrderUpdatedAt, setEditingOrderUpdatedAt] = useState<string | null>(null);
   const [editingOrderStale, setEditingOrderStale] = useState(false);
+  const [orderDialogOpen, setOrderDialogOpen] = useState(false);
+  const [orderDialogMode, setOrderDialogMode] = useState<'details' | 'form'>('details');
+  const [orderDialogOrderId, setOrderDialogOrderId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [settingsForm, setSettingsForm] = useState<SettingsFormState>({
     cnyRate: DEFAULT_SETTINGS.cnyRate.toString(),
@@ -197,6 +200,10 @@ export default function Home() {
   const totalBalance = useMemo(
     () => accounts.reduce((sum, item) => sum + Number(item.balance ?? 0), 0),
     [accounts],
+  );
+  const orderDialogOrder = useMemo(
+    () => orders.find((order) => order.id === orderDialogOrderId) ?? null,
+    [orders, orderDialogOrderId],
   );
 
   const orderTotals = useMemo(
@@ -626,6 +633,35 @@ export default function Home() {
     });
   };
 
+  const closeOrderDialog = () => {
+    setOrderDialogOpen(false);
+    setOrderDialogMode('details');
+    setOrderDialogOrderId(null);
+    resetOrderForm();
+  };
+
+  const openOrderCreate = () => {
+    resetMessages();
+    resetOrderForm();
+    setOrderDialogMode('form');
+    setOrderDialogOrderId(null);
+    setOrderDialogOpen(true);
+  };
+
+  const openOrderEdit = (order: OrderWithSupplier) => {
+    startOrderEdit(order);
+    setOrderDialogMode('form');
+    setOrderDialogOrderId(order.id);
+    setOrderDialogOpen(true);
+  };
+
+  const openOrderDetails = (order: OrderWithSupplier) => {
+    resetMessages();
+    setOrderDialogMode('details');
+    setOrderDialogOrderId(order.id);
+    setOrderDialogOpen(true);
+  };
+
   const handleOrderSubmit = async () => {
     resetMessages();
     try {
@@ -653,7 +689,7 @@ export default function Home() {
 
       const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось сохранить заказ');
-      resetOrderForm();
+      closeOrderDialog();
       setMessage(editingOrderId ? 'Заказ обновлён' : 'Заказ добавлен');
       await loadData();
     } catch (err) {
@@ -668,7 +704,9 @@ export default function Home() {
       const payload = await parseJsonSafe(response);
       if (!response.ok) throw new Error(payload.error || 'Не удалось удалить заказ');
       setMessage('Заказ удалён');
-      if (editingOrderId === order.id) {
+      if (orderDialogOrderId === order.id) {
+        closeOrderDialog();
+      } else if (editingOrderId === order.id) {
         resetOrderForm();
       }
       await loadData();
@@ -878,6 +916,11 @@ export default function Home() {
         Math.max(CHART_MARGIN.top, hoveredPoint.y - tooltipHeight / 2),
       )
     : 0;
+  const orderDialogSupplierName =
+    orderDialogOrder?.supplier_name || orderDialogOrder?.suppliers?.name || '—';
+  const orderDialogTotalAmount = orderDialogOrder ? Number(orderDialogOrder.total_amount) : 0;
+  const orderDialogDepositAmount = orderDialogOrder ? Number(orderDialogOrder.deposit_amount) : 0;
+  const orderDialogRemainingAmount = orderDialogTotalAmount - orderDialogDepositAmount;
 
   const inputClassName =
     'w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400';
@@ -1040,8 +1083,8 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="mt-8 grid gap-6 lg:grid-cols-3">
-          <div className="lg:col-span-2 rounded-2xl bg-white p-5 shadow-sm">
+        <section className="mt-8">
+          <div className="rounded-2xl bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="text-lg font-semibold">Управление сущностями</h2>
@@ -1049,7 +1092,7 @@ export default function Home() {
                   Счета, ожидаемые поступления и заказы поставщикам — единый интерфейс с вкладками.
                 </p>
               </div>
-              <span className="text-xs text-slate-500">Редактирование доступно внутри вкладок</span>
+              <span className="text-xs text-slate-500">Заказы — в карточке, остальные сущности — во вкладках</span>
             </div>
             <div className="mt-4 flex flex-wrap gap-2" role="tablist" aria-label="Сущности">
               <button
@@ -1083,286 +1126,187 @@ export default function Home() {
 
             <div className="mt-4">
               {activeTab === 'orders' && (
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-                  <div className="space-y-4">
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                        <p className="text-xs uppercase tracking-wide text-slate-500">Общая сумма заказов</p>
-                        <p className="text-2xl font-semibold text-slate-900">
-                          {orderTotals.total.toLocaleString('ru-RU')} ₽
-                        </p>
-                      </div>
-                      <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                        <p className="text-xs uppercase tracking-wide text-emerald-700">Авансы к оплате</p>
-                        <p className="text-2xl font-semibold text-emerald-700">
-                          {orderTotals.depositsPlanned.toLocaleString('ru-RU')} ₽
-                        </p>
-                        <p className="text-xs text-emerald-700">
-                          Оплачено: {orderTotals.depositsPaid.toLocaleString('ru-RU')} ₽
-                        </p>
-                      </div>
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Общая сумма заказов</p>
+                      <p className="text-2xl font-semibold text-slate-900">
+                        {orderTotals.total.toLocaleString('ru-RU')} ₽
+                      </p>
                     </div>
+                    <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                      <p className="text-xs uppercase tracking-wide text-emerald-700">Авансы к оплате</p>
+                      <p className="text-2xl font-semibold text-emerald-700">
+                        {orderTotals.depositsPlanned.toLocaleString('ru-RU')} ₽
+                      </p>
+                      <p className="text-xs text-emerald-700">
+                        Оплачено: {orderTotals.depositsPaid.toLocaleString('ru-RU')} ₽
+                      </p>
+                    </div>
+                  </div>
 
-                    <div className="space-y-3">
-                      {paginatedOrders.map((order) => (
-                        <div key={order.id} className="rounded-lg border p-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <p className="font-semibold">{order.title}</p>
-                              {order.supplier_name && (
-                                <p className="text-sm text-slate-500">{order.supplier_name}</p>
-                              )}
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <div className="text-right">
-                                <p className="text-xs text-slate-500">Срок оплаты: {formatDate(order.due_date)}</p>
-                                <p className="font-semibold">
-                                  {formatCurrency(Number(order.total_amount), order.currency ?? 'RUB')}
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">Заказы поставщикам</p>
+                      <p className="text-xs text-slate-500">Кликните по заказу, чтобы открыть карточку.</p>
+                    </div>
+                    <button
+                      onClick={openOrderCreate}
+                      className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                    >
+                      Добавить заказ
+                    </button>
+                  </div>
+
+                  <div className="overflow-x-auto rounded-xl border border-slate-200">
+                    <table className="min-w-[960px] table-fixed text-sm">
+                      <thead>
+                        <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
+                          <th className="w-[20%] px-3 py-2">Заказ</th>
+                          <th className="w-[12%] px-3 py-2">Срок оплаты</th>
+                          <th className="w-[12%] px-3 py-2 text-right">Сумма</th>
+                          <th className="w-[12%] px-3 py-2">Аванс</th>
+                          <th className="w-[12%] px-3 py-2 text-right">Остаток</th>
+                          <th className="w-[20%] px-3 py-2">Комментарий</th>
+                          <th className="w-[12%] px-3 py-2 text-right">Действия</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {paginatedOrders.map((order) => {
+                          const supplierName = order.supplier_name || order.suppliers?.name || '—';
+                          const totalAmount = Number(order.total_amount);
+                          const depositAmount = Number(order.deposit_amount);
+                          const remainingAmount = totalAmount - depositAmount;
+
+                          return (
+                            <tr key={order.id} className="hover:bg-slate-50">
+                              <td className="px-3 py-3 align-top">
+                                <button
+                                  type="button"
+                                  onClick={() => openOrderDetails(order)}
+                                  className="block w-full truncate text-left font-semibold text-slate-900 hover:text-emerald-600"
+                                  title={order.title}
+                                >
+                                  {order.title}
+                                </button>
+                                <p className="w-full truncate text-xs text-slate-500">{supplierName}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => openOrderDetails(order)}
+                                  className="mt-1 text-xs font-semibold text-emerald-600 hover:text-emerald-500"
+                                >
+                                  Открыть
+                                </button>
+                              </td>
+                              <td className="px-3 py-3 align-top text-sm text-slate-700">
+                                {formatDate(order.due_date)}
+                              </td>
+                              <td className="px-3 py-3 align-top text-right">
+                                <p className="font-semibold text-slate-900">
+                                  {formatCurrency(totalAmount, order.currency ?? 'RUB')}
                                 </p>
                                 {order.currency === 'CNY' && (
                                   <p className="text-xs text-slate-500">
-                                    ≈ {formatRubEquivalent(Number(order.total_amount), order.currency, settings)} ₽
+                                    ≈ {formatRubEquivalent(totalAmount, order.currency, settings)} ₽
                                   </p>
                                 )}
-                              </div>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => startOrderEdit(order)}
-                                  className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                                >
-                                  Редактировать
-                                </button>
-                                <button
-                                  onClick={() => handleOrderDelete(order)}
-                                  className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
-                                >
-                                  Удалить
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-600 sm:grid-cols-4">
-                            <p className="flex flex-wrap items-center gap-2">
-                              <span>
-                                Аванс: {formatCurrency(Number(order.deposit_amount), order.currency ?? 'RUB')}
+                              </td>
+                              <td className="px-3 py-3 align-top">
+                                <p className="font-semibold text-slate-900">
+                                  {formatCurrency(depositAmount, order.currency ?? 'RUB')}
+                                </p>
                                 {order.currency === 'CNY' && (
-                                  <span className="text-xs text-slate-500">
-                                    {' '}
-                                    · ≈ {formatRubEquivalent(Number(order.deposit_amount), order.currency, settings)} ₽
-                                  </span>
+                                  <p className="text-xs text-slate-500">
+                                    ≈ {formatRubEquivalent(depositAmount, order.currency, settings)} ₽
+                                  </p>
                                 )}
-                              </span>
-                              {Number(order.deposit_amount) > 0 && (
-                                <span
-                                  className={`text-xs font-semibold ${
-                                    order.deposit_paid ? 'text-emerald-600' : 'text-amber-600'
-                                  }`}
-                                >
-                                  {order.deposit_paid ? 'оплачен' : 'ожидается'}
+                                {depositAmount > 0 && (
+                                  <p
+                                    className={`text-xs font-semibold ${
+                                      order.deposit_paid ? 'text-emerald-600' : 'text-amber-600'
+                                    }`}
+                                  >
+                                    {order.deposit_paid ? 'оплачен' : 'ожидается'}
+                                  </p>
+                                )}
+                              </td>
+                              <td className="px-3 py-3 align-top text-right">
+                                <p className="font-semibold text-slate-900">
+                                  {formatCurrency(remainingAmount, order.currency ?? 'RUB')}
+                                </p>
+                                {order.currency === 'CNY' && (
+                                  <p className="text-xs text-slate-500">
+                                    ≈ {formatRubEquivalent(remainingAmount, order.currency, settings)} ₽
+                                  </p>
+                                )}
+                              </td>
+                              <td className="px-3 py-3 align-top">
+                                <span className="block truncate text-slate-600" title={order.description || ''}>
+                                  {order.description || '—'}
                                 </span>
-                              )}
-                            </p>
-                            <p>Дата аванса: {formatDate(order.deposit_date)}</p>
-                            <p>
-                              Остаток:{' '}
-                              {formatCurrency(
-                                Number(order.total_amount) - Number(order.deposit_amount),
-                                order.currency ?? 'RUB',
-                              )}
-                              {order.currency === 'CNY' && (
-                                <span className="text-xs text-slate-500">
-                                  {' '}
-                                  · ≈{' '}
-                                  {formatRubEquivalent(
-                                    Number(order.total_amount) - Number(order.deposit_amount),
-                                    order.currency,
-                                    settings,
-                                  )}{' '}
-                                  ₽
-                                </span>
-                              )}
-                            </p>
-                            <p>Комментарий: {order.description || '—'}</p>
-                          </div>
-                        </div>
-                      ))}
-
-                      {orders.length > ORDERS_PAGE_SIZE && (
-                        <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="text-sm text-slate-600">
-                            Страница {ordersPage} из {totalOrderPages}
-                          </div>
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              onClick={() => setOrdersPage((page) => Math.max(1, page - 1))}
-                              disabled={ordersPage === 1}
-                              className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              Назад
-                            </button>
-                            {Array.from({ length: totalOrderPages }).map((_, idx) => {
-                              const page = idx + 1;
-                              return (
-                                <button
-                                  key={page}
-                                  onClick={() => setOrdersPage(page)}
-                                  className={`rounded-lg border px-3 py-1 text-sm font-medium ${
-                                    page === ordersPage
-                                      ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                      : 'text-slate-700 hover:border-slate-300'
-                                  }`}
-                                >
-                                  {page}
-                                </button>
-                              );
-                            })}
-                            <button
-                              onClick={() => setOrdersPage((page) => Math.min(totalOrderPages, page + 1))}
-                              disabled={ordersPage === totalOrderPages}
-                              className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              Вперёд
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
+                              </td>
+                              <td className="px-3 py-3 align-top">
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    onClick={() => openOrderEdit(order)}
+                                    className="rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                  >
+                                    Редактировать
+                                  </button>
+                                  <button
+                                    onClick={() => handleOrderDelete(order)}
+                                    className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                                  >
+                                    Удалить
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
 
-                  <div className="space-y-3 rounded-xl border border-dashed p-4">
-                    <p className="text-sm font-semibold">
-                      {editingOrderId ? 'Редактировать заказ' : 'Добавить заказ'}
-                    </p>
-                    {editingOrderStale && (
-                      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                        Заказ обновлён другим пользователем. Обновите данные перед сохранением.
+                  {orders.length > ORDERS_PAGE_SIZE && (
+                    <div className="flex flex-col gap-3 rounded-lg border border-dashed p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="text-sm text-slate-600">
+                        Страница {ordersPage} из {totalOrderPages}
                       </div>
-                    )}
-                    <div className="grid grid-cols-2 gap-3">
-                      <input
-                        type="text"
-                        placeholder="Название / номер заказа"
-                        value={orderForm.title}
-                        onChange={(e) => setOrderForm((prev) => ({ ...prev, title: e.target.value }))}
-                        className={`col-span-2 ${inputClassName}`}
-                      />
-                      <select
-                        value={orderForm.supplierId}
-                        onChange={(e) => setOrderForm((prev) => ({ ...prev, supplierId: e.target.value }))}
-                        className={inputClassName}
-                      >
-                        <option value="">Выбрать поставщика</option>
-                        {suppliers.map((supplier) => (
-                          <option key={supplier.id} value={supplier.id}>
-                            {supplier.name}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        placeholder="Или введите нового поставщика"
-                        value={orderForm.newSupplier}
-                        onChange={(e) => setOrderForm((prev) => ({ ...prev, newSupplier: e.target.value }))}
-                        className={inputClassName}
-                      />
-                      <div className="col-span-2 grid grid-cols-[1fr_auto] gap-2">
-                        <input
-                          type="number"
-                          placeholder="Сумма заказа"
-                          value={orderForm.totalAmount}
-                          onChange={(e) => setOrderForm((prev) => ({ ...prev, totalAmount: e.target.value }))}
-                          className={inputClassName}
-                        />
-                        <select
-                          value={orderForm.currency}
-                          onChange={(e) => setOrderForm((prev) => ({ ...prev, currency: e.target.value as Currency }))}
-                          className={inputClassName}
-                        >
-                          <option value="RUB">₽ Рубли</option>
-                          <option value="CNY">¥ Юани</option>
-                        </select>
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-xs font-semibold text-slate-600">Аванс поставщику</label>
-                        <input
-                          type="number"
-                          placeholder="Аванс поставщику"
-                          value={orderForm.depositAmount}
-                          onChange={(e) => setOrderForm((prev) => ({ ...prev, depositAmount: e.target.value }))}
-                          className={inputClassName}
-                        />
-                      </div>
-                      <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                        <input
-                          type="checkbox"
-                          checked={orderForm.depositPaid}
-                          onChange={(e) => setOrderForm((prev) => ({ ...prev, depositPaid: e.target.checked }))}
-                          className="h-4 w-4 accent-emerald-600"
-                        />
-                        Аванс уже оплачен
-                      </label>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-xs font-semibold text-slate-600">Дата аванса</label>
-                        <input
-                          type="date"
-                          value={orderForm.depositDate}
-                          onChange={(e) => setOrderForm((prev) => ({ ...prev, depositDate: e.target.value }))}
-                          className={inputClassName}
-                        />
-                      </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-xs font-semibold text-slate-600">Срок оплаты</label>
-                        <input
-                          type="date"
-                          value={orderForm.dueDate}
-                          onChange={(e) => setOrderForm((prev) => ({ ...prev, dueDate: e.target.value }))}
-                          className={inputClassName}
-                        />
-                      </div>
-                      <textarea
-                        placeholder="Комментарий"
-                        value={orderForm.description}
-                        onChange={(e) => setOrderForm((prev) => ({ ...prev, description: e.target.value }))}
-                        className={`col-span-2 ${textareaClassName}`}
-                      />
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        onClick={handleOrderCheck}
-                        className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-                      >
-                        Проверить заказ
-                      </button>
-                      <button
-                        onClick={handleOrderSubmit}
-                        disabled={editingOrderStale}
-                        className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {editingOrderId ? 'Сохранить изменения' : 'Сохранить заказ'}
-                      </button>
-                      {editingOrderId && (
+                      <div className="flex flex-wrap gap-2">
                         <button
-                          onClick={resetOrderForm}
-                          className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                          onClick={() => setOrdersPage((page) => Math.max(1, page - 1))}
+                          disabled={ordersPage === 1}
+                          className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Отменить редактирование
+                          Назад
                         </button>
-                      )}
-                    </div>
-                    {checkResult && (
-                      <div
-                        className={`mt-3 rounded-lg border px-3 py-2 text-sm ${
-                          checkResult.ok
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                            : 'border-rose-200 bg-rose-50 text-rose-800'
-                        }`}
-                      >
-                        {checkResult.ok
-                          ? 'Можно оформлять: кассовый разрыв не возникает'
-                          : `Кассовый разрыв составит ${checkResult.cashGap.toLocaleString('ru-RU')} ₽`}
+                        {Array.from({ length: totalOrderPages }).map((_, idx) => {
+                          const page = idx + 1;
+                          return (
+                            <button
+                              key={page}
+                              onClick={() => setOrdersPage(page)}
+                              className={`rounded-lg border px-3 py-1 text-sm font-medium ${
+                                page === ordersPage
+                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                  : 'text-slate-700 hover:border-slate-300'
+                              }`}
+                            >
+                              {page}
+                            </button>
+                          );
+                        })}
+                        <button
+                          onClick={() => setOrdersPage((page) => Math.min(totalOrderPages, page + 1))}
+                          disabled={ordersPage === totalOrderPages}
+                          className="rounded-lg border px-3 py-1 text-sm font-medium text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Вперёд
+                        </button>
                       </div>
-                    )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1612,8 +1556,10 @@ export default function Home() {
               )}
             </div>
           </div>
+        </section>
 
-          <div className="space-y-4 rounded-2xl bg-white p-5 shadow-sm">
+        <section className="mt-6 rounded-2xl bg-white p-5 shadow-sm">
+          <div className="space-y-4">
             <h2 className="text-lg font-semibold">Калькулятор и здоровье кассы</h2>
             <div className="rounded-lg border p-4">
               <p className="text-sm font-semibold">Калькулятор даты</p>
@@ -1931,6 +1877,269 @@ export default function Home() {
             </div>
           )}
         </section>
+
+        {orderDialogOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="order-dialog-title"
+            onClick={closeOrderDialog}
+          >
+            <div
+              className="max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-2xl bg-white p-6 shadow-xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-slate-500">
+                    {orderDialogMode === 'form'
+                      ? editingOrderId
+                        ? 'Редактирование заказа'
+                        : 'Новый заказ'
+                      : 'Карточка заказа'}
+                  </p>
+                  <h3 className="text-lg font-semibold text-slate-900" id="order-dialog-title">
+                    {orderDialogMode === 'form'
+                      ? orderForm.title || 'Заказ без названия'
+                      : orderDialogOrder?.title || 'Заказ'}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={closeOrderDialog}
+                  className="rounded-lg border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Закрыть
+                </button>
+              </div>
+
+              {orderDialogMode === 'details' ? (
+                orderDialogOrder ? (
+                  <div className="mt-4 space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs text-slate-500">Поставщик</p>
+                        <p className="text-sm font-semibold">{orderDialogSupplierName}</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs text-slate-500">Срок оплаты</p>
+                        <p className="text-sm font-semibold">{formatDate(orderDialogOrder.due_date)}</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs text-slate-500">Сумма заказа</p>
+                        <p className="text-sm font-semibold">
+                          {formatCurrency(orderDialogTotalAmount, orderDialogOrder.currency ?? 'RUB')}
+                        </p>
+                        {orderDialogOrder.currency === 'CNY' && (
+                          <p className="text-xs text-slate-500">
+                            ≈ {formatRubEquivalent(orderDialogTotalAmount, orderDialogOrder.currency, settings)} ₽
+                          </p>
+                        )}
+                      </div>
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs text-slate-500">Аванс</p>
+                        <p className="text-sm font-semibold">
+                          {formatCurrency(orderDialogDepositAmount, orderDialogOrder.currency ?? 'RUB')}
+                        </p>
+                        {orderDialogOrder.currency === 'CNY' && (
+                          <p className="text-xs text-slate-500">
+                            ≈ {formatRubEquivalent(orderDialogDepositAmount, orderDialogOrder.currency, settings)} ₽
+                          </p>
+                        )}
+                        {orderDialogDepositAmount > 0 && (
+                          <p
+                            className={`text-xs font-semibold ${
+                              orderDialogOrder.deposit_paid ? 'text-emerald-600' : 'text-amber-600'
+                            }`}
+                          >
+                            {orderDialogOrder.deposit_paid ? 'оплачен' : 'ожидается'}
+                          </p>
+                        )}
+                      </div>
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs text-slate-500">Дата аванса</p>
+                        <p className="text-sm font-semibold">{formatDate(orderDialogOrder.deposit_date)}</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 p-3">
+                        <p className="text-xs text-slate-500">Остаток к оплате</p>
+                        <p className="text-sm font-semibold">
+                          {formatCurrency(orderDialogRemainingAmount, orderDialogOrder.currency ?? 'RUB')}
+                        </p>
+                        {orderDialogOrder.currency === 'CNY' && (
+                          <p className="text-xs text-slate-500">
+                            ≈ {formatRubEquivalent(orderDialogRemainingAmount, orderDialogOrder.currency, settings)} ₽
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 p-4">
+                      <p className="text-xs uppercase tracking-wide text-slate-500">Комментарий</p>
+                      <p className="mt-2 text-sm text-slate-700 whitespace-pre-wrap">
+                        {orderDialogOrder.description || '—'}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openOrderEdit(orderDialogOrder)}
+                        className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        Редактировать
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleOrderDelete(orderDialogOrder)}
+                        className="rounded-lg border border-rose-200 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50"
+                      >
+                        Удалить
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="mt-4 text-sm text-slate-500">Заказ не найден или был удалён.</p>
+                )
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {editingOrderStale && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                      Заказ обновлён другим пользователем. Обновите данные перед сохранением.
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3">
+                    <input
+                      type="text"
+                      placeholder="Название / номер заказа"
+                      value={orderForm.title}
+                      onChange={(e) => setOrderForm((prev) => ({ ...prev, title: e.target.value }))}
+                      className={`col-span-2 ${inputClassName}`}
+                    />
+                    <select
+                      value={orderForm.supplierId}
+                      onChange={(e) => setOrderForm((prev) => ({ ...prev, supplierId: e.target.value }))}
+                      className={inputClassName}
+                    >
+                      <option value="">Выбрать поставщика</option>
+                      {suppliers.map((supplier) => (
+                        <option key={supplier.id} value={supplier.id}>
+                          {supplier.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Или введите нового поставщика"
+                      value={orderForm.newSupplier}
+                      onChange={(e) => setOrderForm((prev) => ({ ...prev, newSupplier: e.target.value }))}
+                      className={inputClassName}
+                    />
+                    <div className="col-span-2 grid grid-cols-[1fr_auto] gap-2">
+                      <input
+                        type="number"
+                        placeholder="Сумма заказа"
+                        value={orderForm.totalAmount}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, totalAmount: e.target.value }))}
+                        className={inputClassName}
+                      />
+                      <select
+                        value={orderForm.currency}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, currency: e.target.value as Currency }))}
+                        className={inputClassName}
+                      >
+                        <option value="RUB">₽ Рубли</option>
+                        <option value="CNY">¥ Юани</option>
+                      </select>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-semibold text-slate-600">Аванс поставщику</label>
+                      <input
+                        type="number"
+                        placeholder="Аванс поставщику"
+                        value={orderForm.depositAmount}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, depositAmount: e.target.value }))}
+                        className={inputClassName}
+                      />
+                    </div>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={orderForm.depositPaid}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, depositPaid: e.target.checked }))}
+                        className="h-4 w-4 accent-emerald-600"
+                      />
+                      Аванс уже оплачен
+                    </label>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-semibold text-slate-600">Дата аванса</label>
+                      <input
+                        type="date"
+                        value={orderForm.depositDate}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, depositDate: e.target.value }))}
+                        className={inputClassName}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-semibold text-slate-600">Срок оплаты</label>
+                      <input
+                        type="date"
+                        value={orderForm.dueDate}
+                        onChange={(e) => setOrderForm((prev) => ({ ...prev, dueDate: e.target.value }))}
+                        className={inputClassName}
+                      />
+                    </div>
+                    <textarea
+                      placeholder="Комментарий"
+                      value={orderForm.description}
+                      onChange={(e) => setOrderForm((prev) => ({ ...prev, description: e.target.value }))}
+                      className={`col-span-2 ${textareaClassName}`}
+                    />
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleOrderCheck}
+                      className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      Проверить заказ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOrderSubmit}
+                      disabled={editingOrderStale}
+                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {editingOrderId ? 'Сохранить изменения' : 'Сохранить заказ'}
+                    </button>
+                    {editingOrderId && (
+                      <button
+                        type="button"
+                        onClick={closeOrderDialog}
+                        className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        Отменить редактирование
+                      </button>
+                    )}
+                  </div>
+                  {checkResult && (
+                    <div
+                      className={`mt-3 rounded-lg border px-3 py-2 text-sm ${
+                        checkResult.ok
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                          : 'border-rose-200 bg-rose-50 text-rose-800'
+                      }`}
+                    >
+                      {checkResult.ok
+                        ? 'Можно оформлять: кассовый разрыв не возникает'
+                        : `Кассовый разрыв составит ${checkResult.cashGap.toLocaleString('ru-RU')} ₽`}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
